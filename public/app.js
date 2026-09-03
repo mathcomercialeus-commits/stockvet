@@ -4,7 +4,8 @@ const state = {
   user: null,
   data: null,
   view: 'dashboard',
-  xmlItems: []
+  xmlItems: [],
+  xmlText: ''
 };
 
 const roleTabs = {
@@ -308,7 +309,13 @@ function renderXml() {
     <section class="grid cols-2">
       <form class="card" data-action="xml-preview">
         <h2>XML</h2>
-        <label class="field">Conteudo do XML<textarea name="xml" placeholder="<NFe>...</NFe>" required></textarea></label>
+        <input class="file-input" name="xmlFile" type="file" accept=".xml,text/xml,application/xml" />
+        <div class="dropzone" data-action="pick-xml" data-dropzone>
+          <strong>Solte o XML aqui</strong>
+          <span>ou selecione o arquivo da nota no computador</span>
+          <button class="btn secondary" type="button" data-action="pick-xml">Escolher XML</button>
+        </div>
+        <label class="field">Conteudo lido<textarea name="xml" placeholder="<NFe>...</NFe>" required>${escapeHtml(state.xmlText)}</textarea></label>
         <button class="btn full" type="submit">Ler XML</button>
       </form>
       <form class="card" data-action="xml-entry">
@@ -630,6 +637,26 @@ function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
+async function previewXml(xml) {
+  const preview = await api('/api/xml/preview', { method: 'POST', body: JSON.stringify({ xml }) });
+  state.xmlText = xml;
+  state.xmlItems = preview.items;
+  renderApp();
+  notify(`${preview.items.length} item(ns) lido(s).`);
+}
+
+async function readXmlFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.xml') && !file.type.includes('xml')) {
+    notify('Selecione um arquivo XML.');
+    return;
+  }
+  const xml = await file.text();
+  const textarea = document.querySelector('form[data-action="xml-preview"] textarea[name="xml"]');
+  if (textarea) textarea.value = xml;
+  await previewXml(xml);
+}
+
 async function handleSubmit(event) {
   const form = event.target.closest('form');
   if (!form) return;
@@ -651,10 +678,7 @@ async function handleSubmit(event) {
       notify('Entrada registrada.');
     }
     if (action === 'xml-preview') {
-      const preview = await api('/api/xml/preview', { method: 'POST', body: JSON.stringify({ xml: data.xml }) });
-      state.xmlItems = preview.items;
-      renderApp();
-      notify(`${preview.items.length} item(ns) lido(s).`);
+      await previewXml(data.xml);
       return;
     }
     if (action === 'xml-entry') {
@@ -663,6 +687,7 @@ async function handleSubmit(event) {
         body: JSON.stringify({ location: data.location, reference: data.reference, source: 'xml', items: state.xmlItems })
       });
       state.xmlItems = [];
+      state.xmlText = '';
       notify('Entrada por XML registrada.');
     }
     if (action === 'stock-exit') {
@@ -700,7 +725,7 @@ async function handleSubmit(event) {
 }
 
 async function handleClick(event) {
-  const target = event.target.closest('button');
+  const target = event.target.closest('button') || event.target.closest('[data-dropzone]');
   if (!target) return;
 
   if (target.dataset.view) {
@@ -725,6 +750,10 @@ async function handleClick(event) {
       await refresh(true);
       if (state.view === 'logs') hydrateLogs();
       notify('Dados atualizados.');
+      return;
+    }
+    if (action === 'pick-xml') {
+      target.closest('form')?.querySelector('input[name="xmlFile"]')?.click();
       return;
     }
     if (action === 'add-item') {
@@ -757,6 +786,37 @@ async function handleClick(event) {
   }
 }
 
+async function handleChange(event) {
+  if (event.target.matches('input[name="xmlFile"]')) {
+    try {
+      await readXmlFile(event.target.files[0]);
+      event.target.value = '';
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+}
+
+function handleDrag(event) {
+  const zone = event.target.closest('[data-dropzone]');
+  if (!zone) return;
+  event.preventDefault();
+  if (event.type === 'dragenter' || event.type === 'dragover') zone.classList.add('dragging');
+  if (event.type === 'dragleave' || event.type === 'drop') zone.classList.remove('dragging');
+}
+
+async function handleDrop(event) {
+  const zone = event.target.closest('[data-dropzone]');
+  if (!zone) return;
+  event.preventDefault();
+  zone.classList.remove('dragging');
+  try {
+    await readXmlFile(event.dataTransfer.files[0]);
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
 async function hydrateLogs() {
   if (state.user?.role !== 'admin') return;
   try {
@@ -783,6 +843,11 @@ async function hydrateLogs() {
 
 document.addEventListener('submit', handleSubmit);
 document.addEventListener('click', handleClick);
+document.addEventListener('change', handleChange);
+document.addEventListener('dragenter', handleDrag);
+document.addEventListener('dragover', handleDrag);
+document.addEventListener('dragleave', handleDrag);
+document.addEventListener('drop', handleDrop);
 
 api('/api/me')
   .then(() => refresh(false))

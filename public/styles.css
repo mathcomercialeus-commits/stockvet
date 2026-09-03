@@ -446,6 +446,42 @@ th {
   overflow: auto;
 }
 
+.file-input {
+  display: none;
+}
+
+.dropzone {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 190px;
+  margin-top: 16px;
+  border: 2px dashed #9fc8b7;
+  border-radius: 8px;
+  background: #f5fbf8;
+  color: var(--brand-strong);
+  padding: 22px;
+  text-align: center;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.dropzone strong {
+  font-size: 20px;
+}
+
+.dropzone span {
+  color: var(--muted);
+}
+
+.dropzone.dragging {
+  border-color: var(--brand);
+  background: #e9f8f1;
+  transform: translateY(-1px);
+}
+
 @media (max-width: 980px) {
   .login-page,
   .app-shell,
