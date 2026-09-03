@@ -380,13 +380,13 @@ th {
 
 .form-row {
   display: grid;
-  grid-template-columns: 1fr 130px 42px;
+  grid-template-columns: minmax(180px, 1fr) 120px 120px 42px;
   gap: 8px;
   margin-top: 8px;
 }
 
 .form-row.entry-row {
-  grid-template-columns: minmax(180px, 1fr) 130px 130px 42px;
+  grid-template-columns: minmax(180px, 1fr) 120px 130px 120px 42px;
 }
 
 .icon-btn {

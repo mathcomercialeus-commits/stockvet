@@ -14,6 +14,7 @@ Sistema interno de controle de estoque para clinica veterinaria, com quatro esto
 - Gerentes criam e excluem usuarios veterinarios, lancam entradas manuais e entradas por XML somente no estoque interno, saidas com motivo e transferencias entre estoques.
 - Na entrada XML, o gerente escolhe se a nota sera registrada como unidade ou ml.
 - Na entrada manual, o codigo interno do produto e gerado automaticamente.
+- Produtos em unidade podem ter conversao `ml por unidade`, permitindo transferencias, saidas e uso veterinario em ml sem quebrar os saldos.
 - Veterinarios registram os produtos usados por comanda e setor.
 - Gerentes aprovam ou rejeitam os registros dos veterinarios antes de movimentar o estoque.
 - Administradores acessam dashboards, relatorios, conferencia e logs de auditoria.

@@ -79,6 +79,7 @@ function initDb() {
       sku TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       unit TEXT NOT NULL DEFAULT 'un',
+      ml_per_unit REAL,
       min_stock REAL NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
@@ -96,6 +97,8 @@ function initDb() {
       location TEXT NOT NULL,
       type TEXT NOT NULL CHECK (type IN ('entry', 'exit', 'vet_usage')),
       quantity REAL NOT NULL,
+      quantity_unit TEXT NOT NULL DEFAULT 'un',
+      quantity_base REAL,
       reason TEXT,
       source TEXT NOT NULL DEFAULT 'manual',
       reference TEXT,
@@ -124,6 +127,8 @@ function initDb() {
       record_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
       quantity REAL NOT NULL,
+      quantity_unit TEXT NOT NULL DEFAULT 'un',
+      quantity_base REAL,
       FOREIGN KEY (record_id) REFERENCES vet_records(id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
@@ -139,6 +144,7 @@ function initDb() {
       created_at TEXT NOT NULL
     );
   `);
+  migrateSchema();
 
   if (!get('SELECT id FROM users WHERE email = @email', { email: 'admin@vetstock.local' })) {
     createSeedUser('Administrador', 'admin@vetstock.local', 'Admin#2026!', 'admin');
@@ -153,12 +159,30 @@ function initDb() {
       ['MED-004', 'Enrofloxacino 50mg', 'cp', 30]
     ].forEach(([sku, name, unit, minStock]) => {
       const id = run(
-        'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, @minStock, @createdAt)',
-        { sku, name, unit, minStock, createdAt: now() }
+        'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, @minStock, @createdAt)',
+        { sku, name, unit, mlPerUnit: null, minStock, createdAt: now() }
       ).lastInsertRowid;
       locations.forEach(([location]) => setBalance(id, location, 0));
     });
   }
+}
+
+function migrateSchema() {
+  [
+    'ALTER TABLE products ADD COLUMN ml_per_unit REAL',
+    "ALTER TABLE movements ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
+    'ALTER TABLE movements ADD COLUMN quantity_base REAL',
+    "ALTER TABLE vet_record_items ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
+    'ALTER TABLE vet_record_items ADD COLUMN quantity_base REAL'
+  ].forEach((statement) => {
+    try {
+      db.exec(statement);
+    } catch (error) {
+      if (!String(error.message).includes('duplicate column name')) throw error;
+    }
+  });
+  run('UPDATE movements SET quantity_base = quantity WHERE quantity_base IS NULL');
+  run('UPDATE vet_record_items SET quantity_base = quantity WHERE quantity_base IS NULL');
 }
 
 function nextInternalSku() {
@@ -170,24 +194,73 @@ function normalizeUnit(unit) {
   return unit === 'ml' ? 'ml' : 'un';
 }
 
+function normalizeQuantityUnit(unit) {
+  return unit === 'ml' ? 'ml' : 'un';
+}
+
+function getProduct(productId) {
+  const product = get('SELECT * FROM products WHERE id = @id AND active = 1', { id: productId });
+  if (!product) throw httpError(404, 'Produto nao encontrado.');
+  return product;
+}
+
+function normalizeMlPerUnit(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function conversionFactor(product) {
+  const factor = normalizeMlPerUnit(product.ml_per_unit);
+  if (!factor) throw httpError(400, `Informe ml por unidade para usar ${product.name} em outra medida.`);
+  return factor;
+}
+
+function toStockQuantity(product, quantity, quantityUnit) {
+  const normalizedQuantity = Number(quantity);
+  const normalizedUnit = normalizeQuantityUnit(quantityUnit || product.unit);
+  if (!Number.isFinite(normalizedQuantity) || normalizedQuantity <= 0) {
+    throw httpError(400, 'Quantidade invalida.');
+  }
+  if (product.unit === normalizedUnit) return normalizedQuantity;
+  const factor = conversionFactor(product);
+  return product.unit === 'un' ? normalizedQuantity / factor : normalizedQuantity * factor;
+}
+
+function formatQuantity(value) {
+  const rounded = Math.round(Number(value) * 1000) / 1000;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function ensureManualProduct(item, actor) {
   if (item.productId) return Number(item.productId);
   const name = String(item.name || '').trim();
   if (!name) throw httpError(400, 'Informe o nome do produto.');
   const unit = normalizeUnit(item.unit);
+  const mlPerUnit = normalizeMlPerUnit(item.mlPerUnit);
   const existing = get(
     'SELECT id FROM products WHERE lower(name) = lower(@name) AND unit = @unit AND active = 1',
     { name, unit }
   );
-  if (existing) return existing.id;
+  if (existing) {
+    updateMlPerUnitIfNeeded(existing.id, mlPerUnit);
+    return existing.id;
+  }
   const sku = nextInternalSku();
   const id = run(
-    'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, @minStock, @createdAt)',
-    { sku, name, unit, minStock: Number(item.minStock || 0), createdAt: now() }
+    'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, @minStock, @createdAt)',
+    { sku, name, unit, mlPerUnit, minStock: Number(item.minStock || 0), createdAt: now() }
   ).lastInsertRowid;
   locations.forEach(([location]) => setBalance(id, location, 0));
-  audit(actor, 'product.created_manual_entry', 'product', id, { sku, name, unit });
+  audit(actor, 'product.created_manual_entry', 'product', id, { sku, name, unit, mlPerUnit });
   return id;
+}
+
+function updateMlPerUnitIfNeeded(productId, mlPerUnit) {
+  if (!mlPerUnit) return;
+  const product = get('SELECT ml_per_unit FROM products WHERE id = @id', { id: productId });
+  if (!product?.ml_per_unit) {
+    run('UPDATE products SET ml_per_unit = @mlPerUnit WHERE id = @id', { id: productId, mlPerUnit });
+  }
 }
 
 function createSeedUser(name, email, password, role) {
@@ -322,7 +395,7 @@ function publicUser(user) {
 
 function inventorySnapshot() {
   const rows = all(`
-    SELECT p.id, p.sku, p.name, p.unit, p.min_stock, p.active, b.location, b.quantity
+    SELECT p.id, p.sku, p.name, p.unit, p.ml_per_unit, p.min_stock, p.active, b.location, b.quantity
     FROM products p
     LEFT JOIN stock_balances b ON b.product_id = p.id
     ORDER BY p.name, b.location
@@ -335,6 +408,7 @@ function inventorySnapshot() {
         sku: row.sku,
         name: row.name,
         unit: row.unit,
+        ml_per_unit: row.ml_per_unit,
         min_stock: row.min_stock,
         active: Boolean(row.active),
         balances: Object.fromEntries(locations.map(([id]) => [id, 0]))
@@ -370,7 +444,7 @@ function vetRecords(user) {
     params
   );
   const items = all(`
-    SELECT vri.record_id, vri.product_id, vri.quantity, p.name AS product_name, p.sku, p.unit
+    SELECT vri.record_id, vri.product_id, vri.quantity, vri.quantity_unit, vri.quantity_base, p.name AS product_name, p.sku, p.unit, p.ml_per_unit
     FROM vet_record_items vri
     JOIN products p ON p.id = vri.product_id
   `);
@@ -414,14 +488,18 @@ function parseXmlProducts(xml) {
 
 function ensureProductFromXml(item, actor) {
   const existing = get('SELECT id FROM products WHERE sku = @sku', { sku: item.sku });
-  if (existing) return existing.id;
+  const mlPerUnit = normalizeMlPerUnit(item.mlPerUnit);
+  if (existing) {
+    updateMlPerUnitIfNeeded(existing.id, mlPerUnit);
+    return existing.id;
+  }
   const unit = normalizeUnit(item.unit);
   const id = run(
-    'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, 0, @createdAt)',
-    { sku: item.sku, name: item.name, unit, createdAt: now() }
+    'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, 0, @createdAt)',
+    { sku: item.sku, name: item.name, unit, mlPerUnit, createdAt: now() }
   ).lastInsertRowid;
   locations.forEach(([location]) => setBalance(id, location, 0));
-  audit(actor, 'product.created_from_xml', 'product', id, { ...item, unit });
+  audit(actor, 'product.created_from_xml', 'product', id, { ...item, unit, mlPerUnit });
   return id;
 }
 
@@ -486,8 +564,15 @@ function handleApi(req, res, pathname) {
         const name = String(body.name || '').trim();
         if (!sku || !name) throw httpError(400, 'Informe SKU e nome do produto.');
         const id = run(
-          'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, @minStock, @createdAt)',
-          { sku, name, unit: body.unit || 'un', minStock: Number(body.minStock || 0), createdAt: now() }
+          'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, @minStock, @createdAt)',
+          {
+            sku,
+            name,
+            unit: normalizeUnit(body.unit),
+            mlPerUnit: normalizeMlPerUnit(body.mlPerUnit),
+            minStock: Number(body.minStock || 0),
+            createdAt: now()
+          }
         ).lastInsertRowid;
         locations.forEach(([location]) => setBalance(id, location, 0));
         audit(user, 'product.created', 'product', id, { sku, name });
@@ -565,14 +650,18 @@ function handleApi(req, res, pathname) {
         try {
           items.forEach((item) => {
             const entryItem =
-              body.source === 'xml' && body.unit ? { ...item, unit: normalizeUnit(body.unit) } : item;
+              body.source === 'xml' && body.unit
+                ? { ...item, unit: normalizeUnit(body.unit), mlPerUnit: body.mlPerUnit }
+                : item;
             const productId = body.source === 'xml' ? ensureProductFromXml(entryItem, user) : ensureManualProduct(entryItem, user);
+            const product = getProduct(productId);
             const quantity = Number(item.quantity);
-            if (!productId || quantity <= 0) throw httpError(400, 'Itens invalidos na entrada.');
-            changeStock(productId, location, quantity);
+            const quantityUnit = normalizeQuantityUnit(entryItem.unit || product.unit);
+            const quantityBase = toStockQuantity(product, quantity, quantityUnit);
+            changeStock(productId, location, quantityBase);
             tx.run`
-              INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, created_at)
-              VALUES (${productId}, ${location}, 'entry', ${quantity}, ${body.reason || 'Entrada de estoque'}, ${body.source || 'manual'}, ${body.reference || null}, ${user.id}, ${now()})
+              INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+              VALUES (${productId}, ${location}, 'entry', ${quantity}, ${quantityUnit}, ${quantityBase}, ${body.reason || 'Entrada de estoque'}, ${body.source || 'manual'}, ${body.reference || null}, ${user.id}, ${now()})
             `;
           });
           db.exec('COMMIT');
@@ -589,12 +678,15 @@ function handleApi(req, res, pathname) {
         const body = await readBody(req);
         const productId = Number(body.productId);
         const quantity = Number(body.quantity);
+        const product = productId ? getProduct(productId) : null;
+        const quantityUnit = normalizeQuantityUnit(body.quantityUnit || product?.unit);
+        const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
         const fromLocation = body.fromLocation;
         const toLocation = body.toLocation;
         const reason = String(body.reason || 'Transferencia entre estoques').trim();
         if (
           !productId ||
-          quantity <= 0 ||
+          quantityBase <= 0 ||
           !locationIsValid(fromLocation) ||
           !locationIsValid(toLocation) ||
           fromLocation === toLocation
@@ -603,15 +695,17 @@ function handleApi(req, res, pathname) {
         }
         db.exec('BEGIN');
         try {
-          changeStock(productId, fromLocation, -quantity);
-          changeStock(productId, toLocation, quantity);
+          changeStock(productId, fromLocation, -quantityBase);
+          changeStock(productId, toLocation, quantityBase);
           run(
-            `INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, created_at)
-             VALUES (@productId, @location, 'exit', @quantity, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
+            `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+             VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
             {
               productId,
               location: fromLocation,
               quantity,
+              quantityUnit,
+              quantityBase,
               reason,
               reference: `Para ${toLocation}`,
               createdBy: user.id,
@@ -619,12 +713,14 @@ function handleApi(req, res, pathname) {
             }
           );
           run(
-            `INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, created_at)
-             VALUES (@productId, @location, 'entry', @quantity, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
+            `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+             VALUES (@productId, @location, 'entry', @quantity, @quantityUnit, @quantityBase, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
             {
               productId,
               location: toLocation,
               quantity,
+              quantityUnit,
+              quantityBase,
               reason,
               reference: `De ${fromLocation}`,
               createdBy: user.id,
@@ -636,7 +732,7 @@ function handleApi(req, res, pathname) {
           db.exec('ROLLBACK');
           throw error;
         }
-        audit(user, 'stock.transfer', 'movement', null, { productId, fromLocation, toLocation, quantity, reason });
+        audit(user, 'stock.transfer', 'movement', null, { productId, fromLocation, toLocation, quantity, quantityUnit, quantityBase, reason });
         return sendJson(res, 201, { ok: true });
       }
 
@@ -645,17 +741,20 @@ function handleApi(req, res, pathname) {
         const body = await readBody(req);
         const productId = Number(body.productId);
         const quantity = Number(body.quantity);
+        const product = productId ? getProduct(productId) : null;
+        const quantityUnit = normalizeQuantityUnit(body.quantityUnit || product?.unit);
+        const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
         const reason = String(body.reason || '').trim();
-        if (!locationIsValid(body.location) || !productId || quantity <= 0 || !reason) {
+        if (!locationIsValid(body.location) || !productId || quantityBase <= 0 || !reason) {
           throw httpError(400, 'Informe produto, estoque, quantidade e motivo.');
         }
-        changeStock(productId, body.location, -quantity);
+        changeStock(productId, body.location, -quantityBase);
         const id = run(
-          `INSERT INTO movements (product_id, location, type, quantity, reason, source, created_by, created_at)
-           VALUES (@productId, @location, 'exit', @quantity, @reason, 'manual', @createdBy, @createdAt)`,
-          { productId, location: body.location, quantity, reason, createdBy: user.id, createdAt: now() }
+          `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, created_by, created_at)
+           VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'manual', @createdBy, @createdAt)`,
+          { productId, location: body.location, quantity, quantityUnit, quantityBase, reason, createdBy: user.id, createdAt: now() }
         ).lastInsertRowid;
-        audit(user, 'stock.exit', 'movement', id, { productId, location: body.location, quantity, reason });
+        audit(user, 'stock.exit', 'movement', id, { productId, location: body.location, quantity, quantityUnit, quantityBase, reason });
         return sendJson(res, 201, { ok: true, id });
       }
 
@@ -690,10 +789,14 @@ function handleApi(req, res, pathname) {
           items.forEach((item) => {
             const productId = Number(item.productId);
             const quantity = Number(item.quantity);
-            if (!productId || quantity <= 0) throw httpError(400, 'Item invalido.');
+            const product = productId ? getProduct(productId) : null;
+            const quantityUnit = normalizeQuantityUnit(item.quantityUnit || product?.unit);
+            const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
+            if (!productId || quantityBase <= 0) throw httpError(400, 'Item invalido.');
             run(
-              'INSERT INTO vet_record_items (record_id, product_id, quantity) VALUES (@recordId, @productId, @quantity)',
-              { recordId, productId, quantity }
+              `INSERT INTO vet_record_items (record_id, product_id, quantity, quantity_unit, quantity_base)
+               VALUES (@recordId, @productId, @quantity, @quantityUnit, @quantityBase)`,
+              { recordId, productId, quantity, quantityUnit, quantityBase }
             );
           });
           db.exec('COMMIT');
@@ -719,14 +822,17 @@ function handleApi(req, res, pathname) {
         try {
           if (action === 'approve') {
             items.forEach((item) => {
-              changeStock(item.product_id, record.location, -Number(item.quantity));
+              const quantityBase = Number(item.quantity_base || item.quantity);
+              changeStock(item.product_id, record.location, -quantityBase);
               run(
-                `INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, approved_record_id, created_at)
-                 VALUES (@productId, @location, 'vet_usage', @quantity, @reason, 'veterinarian', @reference, @createdBy, @recordId, @createdAt)`,
+                `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, approved_record_id, created_at)
+                 VALUES (@productId, @location, 'vet_usage', @quantity, @quantityUnit, @quantityBase, @reason, 'veterinarian', @reference, @createdBy, @recordId, @createdAt)`,
                 {
                   productId: item.product_id,
                   location: record.location,
                   quantity: item.quantity,
+                  quantityUnit: item.quantity_unit || 'un',
+                  quantityBase,
                   reason: `Uso em atendimento - comanda ${record.command_number}`,
                   reference: record.command_number,
                   createdBy: user.id,

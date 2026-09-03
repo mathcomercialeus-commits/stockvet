@@ -329,6 +329,7 @@ function renderXml() {
             <option value="ml">ml</option>
           </select>
         </label>
+        <label class="field">ml por unidade<input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="Ex.: 100" /></label>
         <label class="field">Referencia<input name="reference" placeholder="Numero da nota" /></label>
         <div class="xml-preview">${renderXmlItems()}</div>
         <button class="btn full" type="submit">Confirmar entrada</button>
@@ -346,6 +347,7 @@ function renderExit() {
           <label class="field">Produto<select name="productId">${productOptions()}</select></label>
           <label class="field">Estoque<select name="location">${locationOptions(true)}</select></label>
           <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field">Medida<select name="quantityUnit">${quantityUnitOptions()}</select></label>
           <label class="field">Motivo<input name="reason" required placeholder="Perda, vencimento, ajuste..." /></label>
         </div>
         <button class="btn full" type="submit">Salvar saida</button>
@@ -365,6 +367,7 @@ function renderTransfer() {
           <label class="field">Origem<select name="fromLocation">${locationOptions(true)}</select></label>
           <label class="field">Destino<select name="toLocation">${locationOptions(true)}</select></label>
           <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field">Medida<select name="quantityUnit">${quantityUnitOptions()}</select></label>
           <label class="field">Motivo<input name="reason" placeholder="Reposicao, remanejamento..." /></label>
         </div>
         <button class="btn full" type="submit">Transferir</button>
@@ -442,6 +445,7 @@ function productItemRow() {
     <div class="form-row" data-item-row>
       <select name="productId">${productOptions()}</select>
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
+      <select name="quantityUnit">${quantityUnitOptions()}</select>
       <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
@@ -455,10 +459,15 @@ function entryItemRow() {
         <option value="un">Unidade</option>
         <option value="ml">ml</option>
       </select>
+      <input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="ml por un." />
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
       <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
+}
+
+function quantityUnitOptions() {
+  return '<option value="un">Unidade</option><option value="ml">ml</option>';
 }
 
 function renderXmlItems() {
@@ -483,7 +492,7 @@ function renderInventory() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Produto</th><th>SKU</th><th>Un.</th><th>Min.</th><th>Interno</th><th>Consultorio 1</th><th>Consultorio 2</th><th>Internacao</th></tr>
+          <tr><th>Produto</th><th>SKU</th><th>Un.</th><th>ml/un.</th><th>Min.</th><th>Interno</th><th>Consultorio 1</th><th>Consultorio 2</th><th>Internacao</th></tr>
         </thead>
         <tbody>
           ${state.data.products
@@ -493,11 +502,12 @@ function renderInventory() {
                 <td>${escapeHtml(product.name)}</td>
                 <td>${escapeHtml(product.sku)}</td>
                 <td>${escapeHtml(product.unit)}</td>
+                <td>${product.ml_per_unit || '-'}</td>
                 <td>${product.min_stock}</td>
-                <td>${product.balances.internal || 0}</td>
-                <td>${product.balances.consultorio1 || 0}</td>
-                <td>${product.balances.consultorio2 || 0}</td>
-                <td>${product.balances.internacao || 0}</td>
+                <td>${formatBalance(product, 'internal')}</td>
+                <td>${formatBalance(product, 'consultorio1')}</td>
+                <td>${formatBalance(product, 'consultorio2')}</td>
+                <td>${formatBalance(product, 'internacao')}</td>
               </tr>`
             )
             .join('')}
@@ -505,6 +515,23 @@ function renderInventory() {
       </table>
     </div>
   `;
+}
+
+function formatBalance(product, location) {
+  const value = Number(product.balances[location] || 0);
+  const main = `${formatNumber(value)} ${product.unit}`;
+  if (product.unit === 'un' && product.ml_per_unit) {
+    return `${main}<br><span class="muted">${formatNumber(value * Number(product.ml_per_unit))} ml</span>`;
+  }
+  if (product.unit === 'ml' && product.ml_per_unit) {
+    return `${main}<br><span class="muted">${formatNumber(value / Number(product.ml_per_unit))} un</span>`;
+  }
+  return main;
+}
+
+function formatNumber(value) {
+  const rounded = Math.round(Number(value) * 1000) / 1000;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function renderMovements(movements) {
@@ -522,7 +549,7 @@ function renderMovements(movements) {
                 <td><span class="tag">${escapeHtml(m.type)}</span></td>
                 <td>${escapeHtml(m.product_name)}</td>
                 <td>${locationLabels[m.location] || m.location}</td>
-                <td>${m.quantity}</td>
+                <td>${formatNumber(m.quantity)} ${escapeHtml(m.quantity_unit || '')}</td>
                 <td>${escapeHtml(m.reason || '-')}</td>
                 <td>${escapeHtml(m.actor_name)}</td>
               </tr>`
@@ -549,7 +576,7 @@ function renderRecords(records, withActions = false) {
                 <td>${escapeHtml(record.command_number)}</td>
                 <td>${locationLabels[record.location] || record.location}</td>
                 <td>${escapeHtml(record.veterinarian_name)}</td>
-                <td>${record.items.map((item) => `${escapeHtml(item.product_name)} (${item.quantity} ${escapeHtml(item.unit)})`).join('<br>')}</td>
+                <td>${record.items.map((item) => `${escapeHtml(item.product_name)} (${formatNumber(item.quantity)} ${escapeHtml(item.quantity_unit || item.unit)})`).join('<br>')}</td>
                 <td><span class="tag ${record.status}">${statusLabels[record.status]}</span></td>
                 <td>
                   ${
@@ -636,6 +663,8 @@ function collectItems(form) {
       productId: Number(row.querySelector('[name="productId"]')?.value || 0),
       name: row.querySelector('[name="name"]')?.value,
       unit: row.querySelector('[name="unit"]')?.value,
+      mlPerUnit: row.querySelector('[name="mlPerUnit"]')?.value,
+      quantityUnit: row.querySelector('[name="quantityUnit"]')?.value,
       quantity: Number(row.querySelector('[name="quantity"]').value)
     }))
     .filter((item) => (item.productId || item.name) && item.quantity > 0);
@@ -696,6 +725,7 @@ async function handleSubmit(event) {
           location: data.location,
           reference: data.reference,
           unit: data.unit,
+          mlPerUnit: data.mlPerUnit,
           source: 'xml',
           items: state.xmlItems
         })
