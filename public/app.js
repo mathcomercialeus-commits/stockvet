@@ -17,10 +17,11 @@ const roleTabs = {
   ],
   manager: [
     ['dashboard', 'Painel'],
-    ['entry', 'Entrada'],
+    ['stock', 'Estoques'],
+    ['entry', 'Entrada manual'],
     ['xml', 'Entrada XML'],
     ['exit', 'Saida'],
-    ['products', 'Produtos'],
+    ['transfer', 'Transferencias'],
     ['vets', 'Veterinarios'],
     ['approvals', 'Aprovacoes']
   ],
@@ -137,11 +138,6 @@ function renderLogin() {
             <input name="password" type="password" autocomplete="current-password" required />
           </label>
           <button class="btn full" type="submit">Entrar</button>
-          <div class="demo-logins">
-            <button type="button" data-demo="admin">Admin</button>
-            <button type="button" data-demo="manager">Gerente</button>
-            <button type="button" data-demo="veterinarian">Vet</button>
-          </div>
         </form>
       </section>
     </main>
@@ -196,7 +192,7 @@ function renderView() {
     entry: renderEntry,
     xml: renderXml,
     exit: renderExit,
-    products: renderProducts,
+    transfer: renderTransfer,
     vets: renderVets,
     approvals: renderApprovals,
     attendance: renderAttendance,
@@ -285,13 +281,6 @@ function renderLogs() {
   `;
 }
 
-function renderUsers() {
-  return `
-    ${pageHeader('Usuarios', 'Perfis cadastrados.')}
-    <section class="card">${renderUsersTable()}</section>
-  `;
-}
-
 function renderEntry() {
   return `
     ${pageHeader('Entrada manual', 'Lancamento de produtos recebidos.')}
@@ -350,21 +339,22 @@ function renderExit() {
   `;
 }
 
-function renderProducts() {
+function renderTransfer() {
   return `
-    ${pageHeader('Produtos', 'Cadastro e saldos atuais.')}
+    ${pageHeader('Transferencias', 'Movimente produtos entre os quatro estoques.')}
     <section class="grid cols-2">
-      <form class="card" data-action="create-product">
-        <h2>Novo produto</h2>
-        <label class="field">SKU<input name="sku" required /></label>
-        <label class="field">Nome<input name="name" required /></label>
+      <form class="card" data-action="stock-transfer">
+        <h2>Nova transferencia</h2>
+        <label class="field">Produto<select name="productId">${productOptions()}</select></label>
         <div class="grid cols-2">
-          <label class="field">Unidade<input name="unit" value="un" required /></label>
-          <label class="field">Minimo<input name="minStock" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="field">Origem<select name="fromLocation">${locationOptions(true)}</select></label>
+          <label class="field">Destino<select name="toLocation">${locationOptions(true)}</select></label>
+          <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field">Motivo<input name="reason" placeholder="Reposicao, remanejamento..." /></label>
         </div>
-        <button class="btn full" type="submit">Cadastrar</button>
+        <button class="btn full" type="submit">Transferir</button>
       </form>
-      <div class="card"><h2>Lista</h2>${renderInventory()}</div>
+      <div class="card"><h2>Saldos por estoque</h2>${renderInventory()}</div>
     </section>
   `;
 }
@@ -380,7 +370,7 @@ function renderVets() {
         <label class="field">Senha inicial<input name="password" type="password" required /></label>
         <button class="btn full" type="submit">Cadastrar</button>
       </form>
-      <div class="card"><h2>Cadastrados</h2>${renderUsersTable('veterinarian')}</div>
+      <div class="card"><h2>Cadastrados</h2>${renderUsersTable('veterinarian', true)}</div>
     </section>
   `;
 }
@@ -428,9 +418,28 @@ function renderStock() {
 }
 
 function itemRow() {
+  if (state.view === 'entry') return entryItemRow();
+  return productItemRow();
+}
+
+function productItemRow() {
   return `
     <div class="form-row" data-item-row>
       <select name="productId">${productOptions()}</select>
+      <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
+      <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
+    </div>
+  `;
+}
+
+function entryItemRow() {
+  return `
+    <div class="form-row entry-row" data-item-row>
+      <input name="name" placeholder="Nome do produto" required />
+      <select name="unit">
+        <option value="un">Unidade</option>
+        <option value="ml">ml</option>
+      </select>
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
       <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
@@ -543,13 +552,17 @@ function renderRecords(records, withActions = false) {
   `;
 }
 
-function renderUsersTable(filterRole = '') {
-  const users = state.data.users.filter((user) => !filterRole || user.role === filterRole);
+function renderUsersTable(filterRole = '', withActions = false, allowedRoles = []) {
+  const users = state.data.users.filter((user) => {
+    const roleMatches = !filterRole || user.role === filterRole;
+    const allowedMatches = !allowedRoles.length || allowedRoles.includes(user.role);
+    return roleMatches && allowedMatches;
+  });
   if (!users.length) return '<div class="empty">Nenhum usuario cadastrado.</div>';
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Criado em</th></tr></thead>
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Acoes</th></tr></thead>
         <tbody>
           ${users
             .map(
@@ -560,6 +573,7 @@ function renderUsersTable(filterRole = '') {
                 <td><span class="tag">${escapeHtml(user.role)}</span></td>
                 <td>${user.active ? 'Ativo' : 'Inativo'}</td>
                 <td>${fmtDate(user.created_at)}</td>
+                <td>${withActions ? deleteUserButton(user) : '-'}</td>
               </tr>`
             )
             .join('')}
@@ -569,13 +583,47 @@ function renderUsersTable(filterRole = '') {
   `;
 }
 
+function renderUsers() {
+  const roles = state.user.role === 'admin' ? ['admin', 'manager'] : ['veterinarian'];
+  return `
+    ${pageHeader('Usuarios', 'Crie e exclua acessos da administracao.')}
+    <section class="grid cols-2">
+      <form class="card" data-action="create-user">
+        <h2>Novo usuario</h2>
+        <label class="field">Nome<input name="name" required /></label>
+        <label class="field">E-mail<input name="email" type="email" required /></label>
+        <label class="field">Perfil<select name="role">${roles.map((role) => `<option value="${role}">${roleLabel(role)}</option>`).join('')}</select></label>
+        <label class="field">Senha inicial<input name="password" type="password" required /></label>
+        <button class="btn full" type="submit">Cadastrar</button>
+      </form>
+      <div class="card"><h2>Administracao</h2>${renderUsersTable('', true, roles)}</div>
+    </section>
+  `;
+}
+
+function roleLabel(role) {
+  return { admin: 'Administrador', manager: 'Gerente', veterinarian: 'Veterinario' }[role] || role;
+}
+
+function deleteUserButton(user) {
+  const allowed =
+    user.active &&
+    user.id !== state.user.id &&
+    ((state.user.role === 'admin' && ['admin', 'manager'].includes(user.role)) ||
+      (state.user.role === 'manager' && user.role === 'veterinarian'));
+  if (!allowed) return '-';
+  return `<button class="btn danger" data-action="delete-user" data-id="${user.id}" data-name="${escapeHtml(user.name)}">Excluir</button>`;
+}
+
 function collectItems(form) {
   return [...form.querySelectorAll('[data-item-row]')]
     .map((row) => ({
-      productId: Number(row.querySelector('[name="productId"]').value),
+      productId: Number(row.querySelector('[name="productId"]')?.value || 0),
+      name: row.querySelector('[name="name"]')?.value,
+      unit: row.querySelector('[name="unit"]')?.value,
       quantity: Number(row.querySelector('[name="quantity"]').value)
     }))
-    .filter((item) => item.productId && item.quantity > 0);
+    .filter((item) => (item.productId || item.name) && item.quantity > 0);
 }
 
 function formData(form) {
@@ -621,12 +669,16 @@ async function handleSubmit(event) {
       await api('/api/stock/exit', { method: 'POST', body: JSON.stringify(data) });
       notify('Saida registrada.');
     }
-    if (action === 'create-product') {
-      await api('/api/products', { method: 'POST', body: JSON.stringify(data) });
-      notify('Produto cadastrado.');
+    if (action === 'stock-transfer') {
+      await api('/api/stock/transfer', { method: 'POST', body: JSON.stringify(data) });
+      notify('Transferencia registrada.');
+    }
+    if (action === 'create-user') {
+      await api('/api/users', { method: 'POST', body: JSON.stringify(data) });
+      notify('Usuario cadastrado.');
     }
     if (action === 'create-vet') {
-      await api('/api/users/veterinarians', { method: 'POST', body: JSON.stringify(data) });
+      await api('/api/users', { method: 'POST', body: JSON.stringify({ ...data, role: 'veterinarian' }) });
       notify('Veterinario cadastrado.');
     }
     if (action === 'vet-record') {
@@ -658,17 +710,6 @@ async function handleClick(event) {
     return;
   }
 
-  if (target.dataset.demo) {
-    const creds = {
-      admin: ['admin@vetstock.local', 'Admin#2026!'],
-      manager: ['gerente@vetstock.local', 'Gerente#2026!'],
-      veterinarian: ['vet@vetstock.local', 'Vet#2026!']
-    }[target.dataset.demo];
-    document.querySelector('[name="email"]').value = creds[0];
-    document.querySelector('[name="password"]').value = creds[1];
-    return;
-  }
-
   const action = target.dataset.action;
   if (!action) return;
 
@@ -694,6 +735,13 @@ async function handleClick(event) {
     if (action === 'remove-item') {
       const rows = target.closest('form').querySelectorAll('[data-item-row]');
       if (rows.length > 1) target.closest('[data-item-row]').remove();
+      return;
+    }
+    if (action === 'delete-user') {
+      if (!confirm(`Excluir o usuario ${target.dataset.name}?`)) return;
+      await api(`/api/users/${target.dataset.id}`, { method: 'DELETE' });
+      await refresh(true);
+      notify('Usuario excluido.');
       return;
     }
     if (action === 'approve-record' || action === 'reject-record') {

@@ -142,8 +142,6 @@ function initDb() {
 
   if (!get('SELECT id FROM users WHERE email = @email', { email: 'admin@vetstock.local' })) {
     createSeedUser('Administrador', 'admin@vetstock.local', 'Admin#2026!', 'admin');
-    createSeedUser('Gerente', 'gerente@vetstock.local', 'Gerente#2026!', 'manager');
-    createSeedUser('Dra. Veterinaria', 'vet@vetstock.local', 'Vet#2026!', 'veterinarian');
   }
 
   const productCount = get('SELECT COUNT(*) AS total FROM products').total;
@@ -161,6 +159,35 @@ function initDb() {
       locations.forEach(([location]) => setBalance(id, location, 0));
     });
   }
+}
+
+function nextInternalSku() {
+  const value = get("SELECT seq FROM sqlite_sequence WHERE name = 'products'")?.seq || 0;
+  return `INT-${String(Number(value) + 1).padStart(5, '0')}`;
+}
+
+function normalizeUnit(unit) {
+  return unit === 'ml' ? 'ml' : 'un';
+}
+
+function ensureManualProduct(item, actor) {
+  if (item.productId) return Number(item.productId);
+  const name = String(item.name || '').trim();
+  if (!name) throw httpError(400, 'Informe o nome do produto.');
+  const unit = normalizeUnit(item.unit);
+  const existing = get(
+    'SELECT id FROM products WHERE lower(name) = lower(@name) AND unit = @unit AND active = 1',
+    { name, unit }
+  );
+  if (existing) return existing.id;
+  const sku = nextInternalSku();
+  const id = run(
+    'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, @minStock, @createdAt)',
+    { sku, name, unit, minStock: Number(item.minStock || 0), createdAt: now() }
+  ).lastInsertRowid;
+  locations.forEach(([location]) => setBalance(id, location, 0));
+  audit(actor, 'product.created_manual_entry', 'product', id, { sku, name, unit });
+  return id;
 }
 
 function createSeedUser(name, email, password, role) {
@@ -262,6 +289,12 @@ function requireAuth(req) {
 
 function requireRole(user, roles) {
   if (!roles.includes(user.role)) throw httpError(403, 'Permissao insuficiente.');
+}
+
+function canManageUser(actor, targetRole) {
+  if (actor.role === 'admin') return ['admin', 'manager'].includes(targetRole);
+  if (actor.role === 'manager') return targetRole === 'veterinarian';
+  return false;
 }
 
 async function readBody(req) {
@@ -391,6 +424,15 @@ function ensureProductFromXml(item, actor) {
   return id;
 }
 
+function visibleUsersFor(user) {
+  if (user.role === 'veterinarian') return [];
+  const sql =
+    user.role === 'manager'
+      ? "SELECT id, name, email, role, active, created_at FROM users WHERE role = 'veterinarian' ORDER BY name"
+      : 'SELECT id, name, email, role, active, created_at FROM users ORDER BY name';
+  return all(sql);
+}
+
 function handleApi(req, res, pathname) {
   return Promise.resolve()
     .then(async () => {
@@ -432,7 +474,7 @@ function handleApi(req, res, pathname) {
           dashboard: dashboards(),
           vetRecords: vetRecords(user),
           movements: user.role === 'admin' ? movementRows(250) : movementRows(50),
-          users: user.role === 'veterinarian' ? [] : all('SELECT id, name, email, role, active, created_at FROM users ORDER BY name')
+          users: visibleUsersFor(user)
         });
       }
 
@@ -469,6 +511,43 @@ function handleApi(req, res, pathname) {
         return sendJson(res, 201, { ok: true, id });
       }
 
+      if (req.method === 'POST' && pathname === '/api/users') {
+        requireRole(user, ['admin', 'manager']);
+        const body = await readBody(req);
+        const role = String(body.role || '').trim();
+        if (!canManageUser(user, role)) throw httpError(403, 'Voce nao pode criar esse perfil.');
+        if (!body.name || !body.email || !body.password) throw httpError(400, 'Preencha nome, e-mail e senha.');
+        const id = run(
+          'INSERT INTO users (name, email, password_hash, role, created_at) VALUES (@name, @email, @passwordHash, @role, @createdAt)',
+          {
+            name: body.name.trim(),
+            email: body.email.trim().toLowerCase(),
+            passwordHash: hashPassword(body.password),
+            role,
+            createdAt: now()
+          }
+        ).lastInsertRowid;
+        audit(user, 'user.created', 'user', id, { email: body.email, role });
+        return sendJson(res, 201, { ok: true, id });
+      }
+
+      const deleteUserMatch = pathname.match(/^\/api\/users\/(\d+)$/);
+      if (req.method === 'DELETE' && deleteUserMatch) {
+        requireRole(user, ['admin', 'manager']);
+        const targetId = Number(deleteUserMatch[1]);
+        const target = get('SELECT id, name, email, role, active FROM users WHERE id = @id', { id: targetId });
+        if (!target) throw httpError(404, 'Usuario nao encontrado.');
+        if (target.id === user.id) throw httpError(400, 'Voce nao pode excluir seu proprio usuario.');
+        if (!canManageUser(user, target.role)) throw httpError(403, 'Voce nao pode excluir esse perfil.');
+        if (target.role === 'admin') {
+          const activeAdmins = get("SELECT COUNT(*) AS total FROM users WHERE role = 'admin' AND active = 1").total;
+          if (activeAdmins <= 1) throw httpError(400, 'Mantenha pelo menos um administrador ativo.');
+        }
+        run('UPDATE users SET active = 0 WHERE id = @id', { id: targetId });
+        audit(user, 'user.deleted', 'user', targetId, { email: target.email, role: target.role });
+        return sendJson(res, 200, { ok: true });
+      }
+
       if (req.method === 'POST' && pathname === '/api/stock/entry') {
         requireRole(user, ['admin', 'manager']);
         const body = await readBody(req);
@@ -480,7 +559,7 @@ function handleApi(req, res, pathname) {
         db.exec('BEGIN');
         try {
           items.forEach((item) => {
-            const productId = body.source === 'xml' ? ensureProductFromXml(item, user) : Number(item.productId);
+            const productId = body.source === 'xml' ? ensureProductFromXml(item, user) : ensureManualProduct(item, user);
             const quantity = Number(item.quantity);
             if (!productId || quantity <= 0) throw httpError(400, 'Itens invalidos na entrada.');
             changeStock(productId, location, quantity);
@@ -495,6 +574,62 @@ function handleApi(req, res, pathname) {
           throw error;
         }
         audit(user, 'stock.entry', 'movement', null, { location, source: body.source || 'manual', count: items.length });
+        return sendJson(res, 201, { ok: true });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/stock/transfer') {
+        requireRole(user, ['admin', 'manager']);
+        const body = await readBody(req);
+        const productId = Number(body.productId);
+        const quantity = Number(body.quantity);
+        const fromLocation = body.fromLocation;
+        const toLocation = body.toLocation;
+        const reason = String(body.reason || 'Transferencia entre estoques').trim();
+        if (
+          !productId ||
+          quantity <= 0 ||
+          !locationIsValid(fromLocation) ||
+          !locationIsValid(toLocation) ||
+          fromLocation === toLocation
+        ) {
+          throw httpError(400, 'Informe produto, origem, destino e quantidade validos.');
+        }
+        db.exec('BEGIN');
+        try {
+          changeStock(productId, fromLocation, -quantity);
+          changeStock(productId, toLocation, quantity);
+          run(
+            `INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, created_at)
+             VALUES (@productId, @location, 'exit', @quantity, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
+            {
+              productId,
+              location: fromLocation,
+              quantity,
+              reason,
+              reference: `Para ${toLocation}`,
+              createdBy: user.id,
+              createdAt: now()
+            }
+          );
+          run(
+            `INSERT INTO movements (product_id, location, type, quantity, reason, source, reference, created_by, created_at)
+             VALUES (@productId, @location, 'entry', @quantity, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
+            {
+              productId,
+              location: toLocation,
+              quantity,
+              reason,
+              reference: `De ${fromLocation}`,
+              createdBy: user.id,
+              createdAt: now()
+            }
+          );
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        audit(user, 'stock.transfer', 'movement', null, { productId, fromLocation, toLocation, quantity, reason });
         return sendJson(res, 201, { ok: true });
       }
 

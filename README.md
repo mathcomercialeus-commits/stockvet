@@ -10,7 +10,9 @@ Sistema interno de controle de estoque para clinica veterinaria, com quatro esto
 ## Funcionalidades
 
 - Login funcional com sessoes e perfis: administrador, gerente e veterinario.
-- Gerentes cadastram produtos, veterinarios, entradas manuais, entradas por XML e saidas com motivo.
+- Administradores criam e excluem usuarios administrativos.
+- Gerentes criam e excluem usuarios veterinarios, lancam entradas manuais, entradas por XML, saidas com motivo e transferencias entre estoques.
+- Na entrada manual, o codigo interno do produto e gerado automaticamente.
 - Veterinarios registram os produtos usados por comanda e setor.
 - Gerentes aprovam ou rejeitam os registros dos veterinarios antes de movimentar o estoque.
 - Administradores acessam dashboards, relatorios, conferencia e logs de auditoria.
@@ -39,8 +41,6 @@ http://localhost:3000
 | Perfil | E-mail | Senha |
 | --- | --- | --- |
 | Administrador | admin@vetstock.local | Admin#2026! |
-| Gerente | gerente@vetstock.local | Gerente#2026! |
-| Veterinario | vet@vetstock.local | Vet#2026! |
 
 Troque essas senhas antes de usar em producao.
 

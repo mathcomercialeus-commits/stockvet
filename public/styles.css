@@ -186,23 +186,6 @@ textarea:focus {
   margin-top: 20px;
 }
 
-.demo-logins {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.demo-logins button {
-  min-height: 34px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-
 .app-shell {
   display: grid;
   min-height: 100vh;
@@ -402,6 +385,10 @@ th {
   margin-top: 8px;
 }
 
+.form-row.entry-row {
+  grid-template-columns: minmax(180px, 1fr) 130px 130px 42px;
+}
+
 .icon-btn {
   width: 42px;
   height: 42px;
@@ -488,7 +475,8 @@ th {
     display: grid;
   }
 
-  .form-row {
+  .form-row,
+  .form-row.entry-row {
     grid-template-columns: 1fr;
   }
 
@@ -496,7 +484,4 @@ th {
     width: 100%;
   }
 
-  .demo-logins {
-    grid-template-columns: 1fr;
-  }
 }
