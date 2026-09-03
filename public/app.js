@@ -288,7 +288,8 @@ function renderEntry() {
     <section class="card">
       <form data-action="manual-entry">
         <div class="grid cols-2">
-          <label class="field">Estoque<select name="location">${locationOptions(true)}</select></label>
+          <input name="location" type="hidden" value="internal" />
+          <label class="field">Estoque<input value="Estoque interno" disabled /></label>
           <label class="field">Referencia<input name="reference" placeholder="NF, pedido ou observacao" /></label>
         </div>
         <div data-items>
@@ -320,7 +321,14 @@ function renderXml() {
       </form>
       <form class="card" data-action="xml-entry">
         <h2>Itens lidos</h2>
-        <label class="field">Estoque<select name="location">${locationOptions(true)}</select></label>
+        <input name="location" type="hidden" value="internal" />
+        <label class="field">Estoque<input value="Estoque interno" disabled /></label>
+        <label class="field">Tipo de unidade
+          <select name="unit">
+            <option value="un">Unidade</option>
+            <option value="ml">ml</option>
+          </select>
+        </label>
         <label class="field">Referencia<input name="reference" placeholder="Numero da nota" /></label>
         <div class="xml-preview">${renderXmlItems()}</div>
         <button class="btn full" type="submit">Confirmar entrada</button>
@@ -684,7 +692,13 @@ async function handleSubmit(event) {
     if (action === 'xml-entry') {
       await api('/api/stock/entry', {
         method: 'POST',
-        body: JSON.stringify({ location: data.location, reference: data.reference, source: 'xml', items: state.xmlItems })
+        body: JSON.stringify({
+          location: data.location,
+          reference: data.reference,
+          unit: data.unit,
+          source: 'xml',
+          items: state.xmlItems
+        })
       });
       state.xmlItems = [];
       state.xmlText = '';

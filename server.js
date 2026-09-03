@@ -415,12 +415,13 @@ function parseXmlProducts(xml) {
 function ensureProductFromXml(item, actor) {
   const existing = get('SELECT id FROM products WHERE sku = @sku', { sku: item.sku });
   if (existing) return existing.id;
+  const unit = normalizeUnit(item.unit);
   const id = run(
     'INSERT INTO products (sku, name, unit, min_stock, created_at) VALUES (@sku, @name, @unit, 0, @createdAt)',
-    { sku: item.sku, name: item.name, unit: item.unit || 'un', createdAt: now() }
+    { sku: item.sku, name: item.name, unit, createdAt: now() }
   ).lastInsertRowid;
   locations.forEach(([location]) => setBalance(id, location, 0));
-  audit(actor, 'product.created_from_xml', 'product', id, item);
+  audit(actor, 'product.created_from_xml', 'product', id, { ...item, unit });
   return id;
 }
 
@@ -551,7 +552,11 @@ function handleApi(req, res, pathname) {
       if (req.method === 'POST' && pathname === '/api/stock/entry') {
         requireRole(user, ['admin', 'manager']);
         const body = await readBody(req);
-        const location = body.location || 'internal';
+        const requestedLocation = body.location || 'internal';
+        if (user.role === 'manager' && requestedLocation !== 'internal') {
+          throw httpError(403, 'Gerentes so podem dar entrada no estoque interno.');
+        }
+        const location = user.role === 'manager' ? 'internal' : requestedLocation;
         if (!locationIsValid(location)) throw httpError(400, 'Estoque invalido.');
         const items = Array.isArray(body.items) ? body.items : [];
         if (!items.length) throw httpError(400, 'Informe ao menos um item.');
@@ -559,7 +564,9 @@ function handleApi(req, res, pathname) {
         db.exec('BEGIN');
         try {
           items.forEach((item) => {
-            const productId = body.source === 'xml' ? ensureProductFromXml(item, user) : ensureManualProduct(item, user);
+            const entryItem =
+              body.source === 'xml' && body.unit ? { ...item, unit: normalizeUnit(body.unit) } : item;
+            const productId = body.source === 'xml' ? ensureProductFromXml(entryItem, user) : ensureManualProduct(entryItem, user);
             const quantity = Number(item.quantity);
             if (!productId || quantity <= 0) throw httpError(400, 'Itens invalidos na entrada.');
             changeStock(productId, location, quantity);
