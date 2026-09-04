@@ -18,6 +18,7 @@ Sistema interno de controle de estoque para clinica veterinaria, com quatro esto
 - Veterinarios registram os produtos usados por comanda e setor.
 - Gerentes aprovam ou rejeitam os registros dos veterinarios antes de movimentar o estoque.
 - Administradores acessam dashboards, relatorios, conferencia e logs de auditoria.
+- Administradores fazem balanco de estoque, registram divergencias e podem aplicar ajustes auditados.
 - Todas as acoes relevantes geram log.
 
 ## Requisitos

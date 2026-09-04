@@ -143,6 +143,27 @@ function initDb() {
       details TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS stock_audits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location TEXT NOT NULL,
+      notes TEXT,
+      apply_adjustments INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS stock_audit_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      audit_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      expected_quantity REAL NOT NULL,
+      counted_quantity REAL NOT NULL,
+      counted_unit TEXT NOT NULL DEFAULT 'un',
+      counted_base REAL NOT NULL,
+      difference REAL NOT NULL,
+      FOREIGN KEY (audit_id) REFERENCES stock_audits(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
   `);
   migrateSchema();
 
@@ -173,7 +194,9 @@ function migrateSchema() {
     "ALTER TABLE movements ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
     'ALTER TABLE movements ADD COLUMN quantity_base REAL',
     "ALTER TABLE vet_record_items ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
-    'ALTER TABLE vet_record_items ADD COLUMN quantity_base REAL'
+    'ALTER TABLE vet_record_items ADD COLUMN quantity_base REAL',
+    "ALTER TABLE stock_audit_items ADD COLUMN counted_unit TEXT NOT NULL DEFAULT 'un'",
+    'ALTER TABLE stock_audit_items ADD COLUMN counted_base REAL'
   ].forEach((statement) => {
     try {
       db.exec(statement);
@@ -183,6 +206,7 @@ function migrateSchema() {
   });
   run('UPDATE movements SET quantity_base = quantity WHERE quantity_base IS NULL');
   run('UPDATE vet_record_items SET quantity_base = quantity WHERE quantity_base IS NULL');
+  run('UPDATE stock_audit_items SET counted_base = counted_quantity WHERE counted_base IS NULL');
 }
 
 function nextInternalSku() {
@@ -512,6 +536,41 @@ function visibleUsersFor(user) {
   return all(sql);
 }
 
+function stockAuditRows(limit = 50) {
+  const audits = all(
+    `SELECT sa.*, u.name AS actor_name,
+            COUNT(sai.id) AS item_count,
+            SUM(CASE WHEN ABS(sai.difference) > 0.0001 THEN 1 ELSE 0 END) AS divergence_count,
+            SUM(ABS(sai.difference)) AS total_difference
+     FROM stock_audits sa
+     JOIN users u ON u.id = sa.created_by
+     LEFT JOIN stock_audit_items sai ON sai.audit_id = sa.id
+     GROUP BY sa.id
+     ORDER BY sa.created_at DESC
+     LIMIT @limit`,
+    { limit }
+  );
+  const items = all(
+    `SELECT sai.*, p.name AS product_name, p.sku, p.unit, p.ml_per_unit
+     FROM stock_audit_items sai
+     JOIN products p ON p.id = sai.product_id
+     WHERE sai.audit_id IN (SELECT id FROM stock_audits ORDER BY created_at DESC LIMIT @limit)
+     ORDER BY p.name`,
+    { limit }
+  );
+  const grouped = Map.groupBy(items, (item) => item.audit_id);
+  return audits.map((auditRow) => ({ ...auditRow, items: grouped.get(auditRow.id) || [] }));
+}
+
+function auditExpectedQuantity(productId, location) {
+  return Number(
+    get('SELECT quantity FROM stock_balances WHERE product_id = @productId AND location = @location', {
+      productId,
+      location
+    })?.quantity || 0
+  );
+}
+
 function handleApi(req, res, pathname) {
   return Promise.resolve()
     .then(async () => {
@@ -558,7 +617,8 @@ function handleApi(req, res, pathname) {
           dashboard: dashboards(),
           vetRecords: vetRecords(user),
           movements: user.role === 'admin' ? movementRows(250) : movementRows(50),
-          users: visibleUsersFor(user)
+          users: visibleUsersFor(user),
+          stockAudits: user.role === 'admin' ? stockAuditRows(25) : []
         });
       }
 
@@ -769,6 +829,98 @@ function handleApi(req, res, pathname) {
         return sendJson(res, 200, { items: parseXmlProducts(body.xml || body.raw || '') });
       }
 
+      if (req.method === 'POST' && pathname === '/api/stock-audits') {
+        requireRole(user, ['admin']);
+        const body = await readBody(req);
+        const location = body.location;
+        const items = Array.isArray(body.items) ? body.items : [];
+        const applyAdjustments = Boolean(body.applyAdjustments);
+        if (!locationIsValid(location) || !items.length) {
+          throw httpError(400, 'Informe o estoque e ao menos um produto contado.');
+        }
+
+        db.exec('BEGIN');
+        let auditId;
+        let divergenceCount = 0;
+        try {
+          auditId = run(
+            `INSERT INTO stock_audits (location, notes, apply_adjustments, created_by, created_at)
+             VALUES (@location, @notes, @applyAdjustments, @createdBy, @createdAt)`,
+            {
+              location,
+              notes: body.notes || null,
+              applyAdjustments: applyAdjustments ? 1 : 0,
+              createdBy: user.id,
+              createdAt: now()
+            }
+          ).lastInsertRowid;
+
+          items.forEach((item) => {
+            const productId = Number(item.productId);
+            const product = productId ? getProduct(productId) : null;
+            const countedQuantity = Number(item.countedQuantity);
+            const countedUnit = normalizeQuantityUnit(item.countedUnit || product?.unit);
+            if (!product || !Number.isFinite(countedQuantity) || countedQuantity < 0) {
+              throw httpError(400, 'Contagem invalida no balanco.');
+            }
+            const countedBase = countedQuantity === 0 ? 0 : toStockQuantity(product, countedQuantity, countedUnit);
+            const expectedQuantity = auditExpectedQuantity(productId, location);
+            const difference = countedBase - expectedQuantity;
+            if (Math.abs(difference) > 0.0001) divergenceCount += 1;
+
+            run(
+              `INSERT INTO stock_audit_items
+               (audit_id, product_id, expected_quantity, counted_quantity, counted_unit, counted_base, difference)
+               VALUES (@auditId, @productId, @expectedQuantity, @countedQuantity, @countedUnit, @countedBase, @difference)`,
+              {
+                auditId,
+                productId,
+                expectedQuantity,
+                countedQuantity,
+                countedUnit,
+                countedBase,
+                difference
+              }
+            );
+
+            if (applyAdjustments && Math.abs(difference) > 0.0001) {
+              changeStock(productId, location, difference);
+              const type = difference > 0 ? 'entry' : 'exit';
+              const quantity = Math.abs(difference);
+              run(
+                `INSERT INTO movements
+                 (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+                 VALUES (@productId, @location, @type, @quantity, @quantityUnit, @quantityBase, @reason, 'stock_audit', @reference, @createdBy, @createdAt)`,
+                {
+                  productId,
+                  location,
+                  type,
+                  quantity,
+                  quantityUnit: product.unit,
+                  quantityBase: quantity,
+                  reason: `Ajuste de balanco #${auditId}`,
+                  reference: `Balanco #${auditId}`,
+                  createdBy: user.id,
+                  createdAt: now()
+                }
+              );
+            }
+          });
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+
+        audit(user, 'stock_audit.created', 'stock_audit', auditId, {
+          location,
+          applyAdjustments,
+          itemCount: items.length,
+          divergenceCount
+        });
+        return sendJson(res, 201, { ok: true, id: auditId });
+      }
+
       if (req.method === 'POST' && pathname === '/api/vet-records') {
         requireRole(user, ['admin', 'manager', 'veterinarian']);
         const body = await readBody(req);
@@ -877,6 +1029,7 @@ function handleApi(req, res, pathname) {
           movements: movementRows(500),
           vetRecords: vetRecords(user),
           users: all('SELECT id, name, email, role, active, created_at FROM users ORDER BY role, name'),
+          stockAudits: stockAuditRows(100),
           logs
         });
       }

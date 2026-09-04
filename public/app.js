@@ -12,6 +12,7 @@ const roleTabs = {
   admin: [
     ['dashboard', 'Dashboard'],
     ['conference', 'Conferencia'],
+    ['stockAudit', 'Balanco'],
     ['reports', 'Relatorios'],
     ['logs', 'Logs'],
     ['users', 'Usuarios']
@@ -187,6 +188,7 @@ function renderView() {
   const views = {
     dashboard: renderDashboard,
     conference: renderConference,
+    stockAudit: renderStockAudit,
     reports: renderReports,
     logs: renderLogs,
     users: renderUsers,
@@ -257,6 +259,40 @@ function renderConference() {
   `;
 }
 
+function renderStockAudit() {
+  return `
+    ${pageHeader('Balanco de estoque', 'Conte o estoque fisico, compare com o sistema e gere auditoria.')}
+    <section class="grid cols-2">
+      <form class="card" data-action="stock-audit">
+        <h2>Nova conferencia</h2>
+        <div class="grid cols-2">
+          <label class="field">Estoque<select name="location" data-action="audit-location-change">${locationOptions(true)}</select></label>
+          <label class="field">Aplicar ajuste
+            <select name="applyAdjustments">
+              <option value="false">Somente auditar</option>
+              <option value="true">Auditar e ajustar saldo</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">Observacao<textarea name="notes" placeholder="Responsavel pela contagem, turno ou justificativa"></textarea></label>
+        <div class="table-wrap audit-counts">
+          <table>
+            <thead><tr><th>Produto</th><th>Saldo no estoque</th><th>Contagem fisica</th><th>Medida</th></tr></thead>
+            <tbody>
+              ${state.data.products.map((product) => auditCountRow(product)).join('')}
+            </tbody>
+          </table>
+        </div>
+        <button class="btn full" type="submit">Salvar balanco</button>
+      </form>
+      <div class="card">
+        <h2>Historico de auditorias</h2>
+        ${renderStockAudits(state.data.stockAudits || [])}
+      </div>
+    </section>
+  `;
+}
+
 function renderReports() {
   return `
     ${pageHeader('Relatorios', 'Visao consolidada para administracao.')}
@@ -264,6 +300,7 @@ function renderReports() {
       <div class="card"><h2>Estoque</h2>${renderInventory()}</div>
       <div class="card"><h2>Registros veterinarios</h2>${renderRecords(state.data.vetRecords)}</div>
     </section>
+    <section class="card" style="margin-top:16px"><h2>Auditorias de estoque</h2>${renderStockAudits(state.data.stockAudits || [])}</section>
     <section class="card" style="margin-top:16px"><h2>Movimentos</h2>${renderMovements(state.data.movements)}</section>
   `;
 }
@@ -466,8 +503,64 @@ function entryItemRow() {
   `;
 }
 
-function quantityUnitOptions() {
-  return '<option value="un">Unidade</option><option value="ml">ml</option>';
+function quantityUnitOptions(selected = 'un') {
+  return ['un', 'ml']
+    .map((unit) => `<option value="${unit}" ${selected === unit ? 'selected' : ''}>${unit === 'un' ? 'Unidade' : 'ml'}</option>`)
+    .join('');
+}
+
+function auditCountRow(product) {
+  return `
+    <tr data-audit-row data-product-id="${product.id}">
+      <td>${escapeHtml(product.name)}<br><span class="muted">${escapeHtml(product.sku)}</span></td>
+      <td data-current>${formatBalance(product, 'internal')}</td>
+      <td><input name="countedQuantity" type="number" min="0" step="0.01" placeholder="Nao contado" /></td>
+      <td><select name="countedUnit">${quantityUnitOptions(product.unit)}</select></td>
+    </tr>
+  `;
+}
+
+function renderStockAudits(audits) {
+  if (!audits.length) return '<div class="empty">Nenhum balanco registrado.</div>';
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Data</th><th>Estoque</th><th>Itens</th><th>Divergencias</th><th>Ajuste</th><th>Responsavel</th></tr></thead>
+        <tbody>
+          ${audits
+            .map(
+              (audit) => `
+              <tr>
+                <td>${fmtDate(audit.created_at)}</td>
+                <td>${locationLabels[audit.location] || audit.location}</td>
+                <td>${audit.item_count || 0}</td>
+                <td>${audit.divergence_count || 0}</td>
+                <td>${audit.apply_adjustments ? 'Aplicado' : 'Nao aplicado'}</td>
+                <td>${escapeHtml(audit.actor_name || '-')}</td>
+              </tr>
+              <tr>
+                <td colspan="6">${renderStockAuditItems(audit.items || [])}</td>
+              </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderStockAuditItems(items) {
+  if (!items.length) return '<span class="muted">Sem itens registrados.</span>';
+  return `
+    <div class="audit-detail">
+      ${items
+        .map((item) => {
+          const status = Math.abs(Number(item.difference || 0)) > 0.0001 ? 'pending' : 'approved';
+          return `<span class="tag ${status}">${escapeHtml(item.product_name)}: sistema ${formatNumber(item.expected_quantity)} ${escapeHtml(item.unit)}, contado ${formatNumber(item.counted_quantity)} ${escapeHtml(item.counted_unit)}, dif. ${formatNumber(item.difference)} ${escapeHtml(item.unit)}</span>`;
+        })
+        .join('')}
+    </div>
+  `;
 }
 
 function renderXmlItems() {
@@ -670,6 +763,26 @@ function collectItems(form) {
     .filter((item) => (item.productId || item.name) && item.quantity > 0);
 }
 
+function collectStockAuditItems(form) {
+  return [...form.querySelectorAll('[data-audit-row]')]
+    .map((row) => ({
+      productId: Number(row.dataset.productId),
+      countedQuantity: row.querySelector('[name="countedQuantity"]').value,
+      countedUnit: row.querySelector('[name="countedUnit"]').value
+    }))
+    .filter((item) => item.countedQuantity !== '')
+    .map((item) => ({ ...item, countedQuantity: Number(item.countedQuantity) }));
+}
+
+function updateAuditCurrentBalances(select) {
+  const location = select.value;
+  document.querySelectorAll('[data-audit-row]').forEach((row) => {
+    const product = state.data.products.find((item) => item.id === Number(row.dataset.productId));
+    const current = row.querySelector('[data-current]');
+    if (product && current) current.innerHTML = formatBalance(product, location);
+  });
+}
+
 function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
@@ -741,6 +854,18 @@ async function handleSubmit(event) {
     if (action === 'stock-transfer') {
       await api('/api/stock/transfer', { method: 'POST', body: JSON.stringify(data) });
       notify('Transferencia registrada.');
+    }
+    if (action === 'stock-audit') {
+      await api('/api/stock-audits', {
+        method: 'POST',
+        body: JSON.stringify({
+          location: data.location,
+          notes: data.notes,
+          applyAdjustments: data.applyAdjustments === 'true',
+          items: collectStockAuditItems(form)
+        })
+      });
+      notify('Balanco registrado.');
     }
     if (action === 'create-user') {
       await api('/api/users', { method: 'POST', body: JSON.stringify(data) });
@@ -838,6 +963,9 @@ async function handleChange(event) {
     } catch (error) {
       notify(error.message);
     }
+  }
+  if (event.target.matches('[data-action="audit-location-change"]')) {
+    updateAuditCurrentBalances(event.target);
   }
 }
 
