@@ -417,11 +417,13 @@ function publicUser(user) {
   };
 }
 
-function inventorySnapshot() {
+function inventorySnapshot({ includeInactive = false } = {}) {
+  const where = includeInactive ? '' : 'WHERE p.active = 1';
   const rows = all(`
     SELECT p.id, p.sku, p.name, p.unit, p.ml_per_unit, p.min_stock, p.active, b.location, b.quantity
     FROM products p
     LEFT JOIN stock_balances b ON b.product_id = p.id
+    ${where}
     ORDER BY p.name, b.location
   `);
   const products = new Map();
@@ -441,6 +443,14 @@ function inventorySnapshot() {
     if (row.location) products.get(row.id).balances[row.location] = row.quantity;
   });
   return [...products.values()];
+}
+
+function productStockTotal(productId) {
+  return Number(
+    get('SELECT COALESCE(SUM(ABS(quantity)), 0) AS total FROM stock_balances WHERE product_id = @productId', {
+      productId
+    }).total
+  );
 }
 
 function movementRows(limit = 100) {
@@ -642,6 +652,21 @@ function handleApi(req, res, pathname) {
         locations.forEach(([location]) => setBalance(id, location, 0));
         audit(user, 'product.created', 'product', id, { sku, name });
         return sendJson(res, 201, { ok: true, id });
+      }
+
+      const deleteProductMatch = pathname.match(/^\/api\/products\/(\d+)$/);
+      if (req.method === 'DELETE' && deleteProductMatch) {
+        requireRole(user, ['admin']);
+        const productId = Number(deleteProductMatch[1]);
+        const product = get('SELECT id, sku, name, active FROM products WHERE id = @id', { id: productId });
+        if (!product || !product.active) throw httpError(404, 'Cadastro nao encontrado.');
+        const totalStock = productStockTotal(productId);
+        if (totalStock > 0.0001) {
+          throw httpError(400, 'Esse produto ainda tem saldo em estoque. Zere ou ajuste o saldo antes de excluir o cadastro.');
+        }
+        run('UPDATE products SET active = 0 WHERE id = @id', { id: productId });
+        audit(user, 'product.deleted', 'product', productId, { sku: product.sku, name: product.name });
+        return sendJson(res, 200, { ok: true });
       }
 
       if (req.method === 'POST' && pathname === '/api/users/veterinarians') {
@@ -1025,7 +1050,7 @@ function handleApi(req, res, pathname) {
         const logs = all('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 500');
         return sendJson(res, 200, {
           dashboard: dashboards(),
-          inventory: inventorySnapshot(),
+          inventory: inventorySnapshot({ includeInactive: true }),
           movements: movementRows(500),
           vetRecords: vetRecords(user),
           users: all('SELECT id, name, email, role, active, created_at FROM users ORDER BY role, name'),

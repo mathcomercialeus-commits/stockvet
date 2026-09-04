@@ -11,6 +11,7 @@ Sistema interno de controle de estoque para clinica veterinaria, com quatro esto
 
 - Login funcional com sessoes e perfis: administrador, gerente e veterinario.
 - Administradores criam e excluem usuarios administrativos.
+- Administradores excluem cadastros de produtos sem saldo aberto, preservando o historico.
 - Gerentes criam e excluem usuarios veterinarios, lancam entradas manuais e entradas por XML somente no estoque interno, saidas com motivo e transferencias entre estoques.
 - Na entrada XML, o gerente escolhe se a nota sera registrada como unidade ou ml.
 - Na entrada manual, o codigo interno do produto e gerado automaticamente.

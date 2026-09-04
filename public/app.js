@@ -15,7 +15,8 @@ const roleTabs = {
     ['stockAudit', 'Balanco'],
     ['reports', 'Relatorios'],
     ['logs', 'Logs'],
-    ['users', 'Usuarios']
+    ['users', 'Usuarios'],
+    ['registrations', 'Cadastros']
   ],
   manager: [
     ['dashboard', 'Painel'],
@@ -192,6 +193,7 @@ function renderView() {
     reports: renderReports,
     logs: renderLogs,
     users: renderUsers,
+    registrations: renderRegistrations,
     entry: renderEntry,
     xml: renderXml,
     exit: renderExit,
@@ -736,6 +738,54 @@ function renderUsers() {
   `;
 }
 
+function renderRegistrations() {
+  return `
+    ${pageHeader('Cadastros', 'Exclusao segura de cadastros de produtos.')}
+    <section class="card">
+      <h2>Produtos cadastrados</h2>
+      ${renderProductRegistrations()}
+    </section>
+  `;
+}
+
+function renderProductRegistrations() {
+  if (!state.data.products.length) return '<div class="empty">Nenhum produto cadastrado.</div>';
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Produto</th><th>Codigo</th><th>Unidade</th><th>Saldo total</th><th>Status</th><th>Acoes</th></tr></thead>
+        <tbody>
+          ${state.data.products
+            .map((product) => {
+              const total = productTotal(product);
+              return `
+                <tr>
+                  <td>${escapeHtml(product.name)}</td>
+                  <td>${escapeHtml(product.sku)}</td>
+                  <td>${escapeHtml(product.unit)}${product.ml_per_unit ? ` (${formatNumber(product.ml_per_unit)} ml/un.)` : ''}</td>
+                  <td>${formatNumber(total)} ${escapeHtml(product.unit)}</td>
+                  <td>${product.active ? 'Ativo' : 'Inativo'}</td>
+                  <td>${deleteProductButton(product, total)}</td>
+                </tr>
+              `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function productTotal(product) {
+  return Object.values(product.balances).reduce((sum, value) => sum + Math.abs(Number(value || 0)), 0);
+}
+
+function deleteProductButton(product, total) {
+  if (!product.active) return '-';
+  if (total > 0.0001) return '<span class="tag pending">Saldo aberto</span>';
+  return `<button class="btn danger" data-action="delete-product" data-id="${product.id}" data-name="${escapeHtml(product.name)}">Excluir</button>`;
+}
+
 function roleLabel(role) {
   return { admin: 'Administrador', manager: 'Gerente', veterinarian: 'Veterinario' }[role] || role;
 }
@@ -940,6 +990,13 @@ async function handleClick(event) {
       await api(`/api/users/${target.dataset.id}`, { method: 'DELETE' });
       await refresh(true);
       notify('Usuario excluido.');
+      return;
+    }
+    if (action === 'delete-product') {
+      if (!confirm(`Excluir o cadastro ${target.dataset.name}?`)) return;
+      await api(`/api/products/${target.dataset.id}`, { method: 'DELETE' });
+      await refresh(true);
+      notify('Cadastro excluido.');
       return;
     }
     if (action === 'approve-record' || action === 'reject-record') {
