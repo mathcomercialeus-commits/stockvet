@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = resolve(import.meta.dirname);
 const PUBLIC_DIR = join(ROOT, 'public');
-const DATA_DIR = join(ROOT, 'data');
+const DATA_DIR = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(ROOT, 'data');
 const DB_PATH = join(DATA_DIR, 'vet-stock.sqlite');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 10;
 
@@ -537,6 +537,11 @@ function handleApi(req, res, pathname) {
         return sendJson(res, 200, { ok: true }, {
           'Set-Cookie': 'vetstock_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
         });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/health') {
+        get('SELECT 1 AS ok');
+        return sendJson(res, 200, { ok: true, service: 'vet-stock-control' });
       }
 
       const user = requireAuth(req);

@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vet-stock-control
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.14.1
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: vet-stock-data
+      mountPath: /var/data
+      sizeGB: 1

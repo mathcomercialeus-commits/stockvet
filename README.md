@@ -55,3 +55,22 @@ git remote add origin https://github.com/SEU_USUARIO/NOME_DO_REPOSITORIO.git
 git branch -M main
 git push -u origin main
 ```
+
+## Subir no Render
+
+O projeto ja inclui `render.yaml` com:
+
+- Web Service Node.js.
+- Health check em `/api/health`.
+- Disco persistente em `/var/data` para salvar o SQLite.
+- `DATA_DIR=/var/data`.
+
+No Render:
+
+1. Crie ou acesse sua conta em `https://render.com`.
+2. Conecte o repositorio GitHub deste projeto.
+3. Escolha `New` > `Blueprint`.
+4. Selecione o repositorio.
+5. Confirme a criacao do servico.
+
+Importante: SQLite precisa de disco persistente para nao perder estoque, usuarios e logs quando o servico reiniciar. No Render, disco persistente exige plano pago. Em plano gratuito, use apenas para teste, porque arquivos locais podem ser apagados em reinicios ou novos deploys.
