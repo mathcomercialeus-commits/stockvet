@@ -315,7 +315,6 @@ function renderEntry() {
           ${itemRow()}
         </div>
         <div class="actions" style="margin-top:12px">
-          <button class="btn secondary" type="button" data-action="add-item">Adicionar item</button>
           <button class="btn" type="submit">Salvar entrada</button>
         </div>
       </form>
@@ -371,11 +370,7 @@ function entryItemRow() {
   return `
     <div class="form-row entry-row" data-item-row>
       <input name="name" list="product-suggestions" placeholder="Digite o produto" autocomplete="off" required />
-      <select name="unit" title="Unidade do cadastro">${quantityUnitOptions()}</select>
-      <input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="ml por un." />
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
-      <select name="quantityUnit" title="Medida da quantidade">${quantityUnitOptions()}</select>
-      <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
 }
@@ -658,9 +653,6 @@ function collectItems(form) {
       return {
         productId: selectedProductId,
         name: selectedProductId ? '' : typedName,
-        unit: row.querySelector('[name="unit"]')?.value,
-        mlPerUnit: row.querySelector('[name="mlPerUnit"]')?.value,
-        quantityUnit: row.querySelector('[name="quantityUnit"]')?.value,
         quantity: Number(row.querySelector('[name="quantity"]').value)
       };
     })
@@ -684,15 +676,9 @@ function findProductByEntryName(value) {
 }
 
 function syncEntryProductFields(input) {
-  const row = input.closest('[data-item-row]');
   const product = findProductByEntryName(input.value);
-  if (!row || !product) return;
-  const unit = row.querySelector('[name="unit"]');
-  const quantityUnit = row.querySelector('[name="quantityUnit"]');
-  const mlPerUnit = row.querySelector('[name="mlPerUnit"]');
-  if (unit) unit.value = product.unit;
-  if (quantityUnit) quantityUnit.value = product.unit;
-  if (mlPerUnit && product.ml_per_unit) mlPerUnit.value = product.ml_per_unit;
+  if (!product) return;
+  input.title = `Cadastro selecionado: ${product.name} (${product.sku})`;
 }
 
 function collectStockAuditItems(form) {
