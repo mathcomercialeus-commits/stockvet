@@ -140,8 +140,8 @@ function renderLogin() {
           <h2>Entrar</h2>
           <p class="muted">Acesse com seu perfil de trabalho.</p>
           <label class="field">
-            E-mail
-            <input name="email" type="email" autocomplete="email" required />
+            Login
+            <input name="email" type="text" autocomplete="username" required />
           </label>
           <label class="field">
             Senha

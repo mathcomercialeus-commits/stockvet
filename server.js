@@ -10,6 +10,9 @@ const PUBLIC_DIR = join(ROOT, 'public');
 const DATA_DIR = process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(ROOT, 'data');
 const DB_PATH = join(DATA_DIR, 'vet-stock.sqlite');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 10;
+const DEFAULT_ADMIN_LOGIN = process.env.ADMIN_LOGIN || 'Admin';
+const DEFAULT_ADMIN_NAME = process.env.ADMIN_NAME || DEFAULT_ADMIN_LOGIN;
+const LEGACY_ADMIN_LOGIN = 'admin@vetstock.local';
 
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -57,6 +60,60 @@ function verifyPassword(password, stored) {
   const attempted = scryptSync(password, salt, 64);
   const expected = Buffer.from(key, 'hex');
   return expected.length === attempted.length && timingSafeEqual(expected, attempted);
+}
+
+function configuredAdminPasswordHash() {
+  if (process.env.ADMIN_PASSWORD) return hashPassword(process.env.ADMIN_PASSWORD);
+  return process.env.ADMIN_PASSWORD_HASH || null;
+}
+
+function ensureDefaultAdmin() {
+  const passwordHash = configuredAdminPasswordHash();
+  const current = get('SELECT id FROM users WHERE lower(email) = lower(@login)', { login: DEFAULT_ADMIN_LOGIN });
+  const legacy = get('SELECT id FROM users WHERE lower(email) = lower(@login)', { login: LEGACY_ADMIN_LOGIN });
+  const target = current || legacy;
+
+  if (current && legacy && current.id !== legacy.id) {
+    run('UPDATE users SET active = 0, email = @email WHERE id = @id', {
+      id: legacy.id,
+      email: `legacy-admin-${legacy.id}@vetstock.local`
+    });
+  }
+
+  if (target) {
+    if (passwordHash) {
+      run(
+        `UPDATE users
+         SET name = @name, email = @email, password_hash = @passwordHash, role = 'admin', active = 1
+         WHERE id = @id`,
+        { id: target.id, name: DEFAULT_ADMIN_NAME, email: DEFAULT_ADMIN_LOGIN, passwordHash }
+      );
+    } else {
+      run(
+        `UPDATE users
+         SET name = @name, email = @email, role = 'admin', active = 1
+         WHERE id = @id`,
+        { id: target.id, name: DEFAULT_ADMIN_NAME, email: DEFAULT_ADMIN_LOGIN }
+      );
+    }
+    return;
+  }
+
+  if (!passwordHash) {
+    console.warn('Defina ADMIN_PASSWORD ou ADMIN_PASSWORD_HASH para criar o administrador inicial.');
+    return;
+  }
+
+  run(
+    'INSERT INTO users (name, email, password_hash, role, created_at) VALUES (@name, @email, @passwordHash, @role, @createdAt)',
+    {
+      name: DEFAULT_ADMIN_NAME,
+      email: DEFAULT_ADMIN_LOGIN,
+      passwordHash,
+      role: 'admin',
+      createdAt: now()
+    }
+  );
 }
 
 function initDb() {
@@ -164,9 +221,7 @@ function initDb() {
   `);
   migrateSchema();
 
-  if (!get('SELECT id FROM users WHERE email = @email', { email: 'admin@vetstock.local' })) {
-    createSeedUser('Administrador', 'admin@vetstock.local', 'Admin#2026!', 'admin');
-  }
+  ensureDefaultAdmin();
 
   const productCount = get('SELECT COUNT(*) AS total FROM products').total;
   if (productCount === 0) {
@@ -295,13 +350,6 @@ function updateMlPerUnitIfNeeded(productId, mlPerUnit) {
   if (!product?.ml_per_unit) {
     run('UPDATE products SET ml_per_unit = @mlPerUnit WHERE id = @id', { id: productId, mlPerUnit });
   }
-}
-
-function createSeedUser(name, email, password, role) {
-  run(
-    'INSERT INTO users (name, email, password_hash, role, created_at) VALUES (@name, @email, @passwordHash, @role, @createdAt)',
-    { name, email, passwordHash: hashPassword(password), role, createdAt: now() }
-  );
 }
 
 function setBalance(productId, location, quantity) {
@@ -539,9 +587,10 @@ function handleApi(req, res, pathname) {
     .then(async () => {
       if (req.method === 'POST' && pathname === '/api/login') {
         const body = await readBody(req);
-        const user = get('SELECT * FROM users WHERE email = @email AND active = 1', { email: body.email || '' });
+        const login = String(body.email || body.login || '').trim();
+        const user = get('SELECT * FROM users WHERE lower(email) = lower(@login) AND active = 1', { login });
         if (!user || !verifyPassword(body.password || '', user.password_hash)) {
-          throw httpError(401, 'E-mail ou senha invalidos.');
+          throw httpError(401, 'Login ou senha invalidos.');
         }
         if (user.role === 'veterinarian') {
           throw httpError(403, 'Perfil veterinario desativado.');
