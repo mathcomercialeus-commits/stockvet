@@ -1,23 +1,16 @@
 # Vet Stock Control
 
-Sistema interno de controle de estoque para clinica veterinaria, com quatro estoques:
-
-- Estoque interno
-- Consultorio 1
-- Consultorio 2
-- Internacao
+Sistema interno de controle de estoque unico para clinica veterinaria.
 
 ## Funcionalidades
 
-- Login funcional com sessoes e perfis: administrador, gerente e veterinario.
+- Login funcional com sessoes e perfis ativos: administrador e gerente.
 - Administradores criam e excluem usuarios administrativos.
-- Administradores excluem cadastros de produtos sem saldo aberto, preservando o historico.
-- Gerentes criam e excluem usuarios veterinarios, lancam entradas manuais e entradas por XML somente no estoque interno, saidas com motivo e transferencias entre estoques.
-- Na entrada XML, o gerente escolhe se a nota sera registrada como unidade ou ml.
-- Na entrada manual, o codigo interno do produto e gerado automaticamente.
-- Produtos em unidade podem ter conversao `ml por unidade`, permitindo transferencias, saidas e uso veterinario em ml sem quebrar os saldos.
-- Veterinarios registram os produtos usados por comanda e setor.
-- Gerentes aprovam ou rejeitam os registros dos veterinarios antes de movimentar o estoque.
+- Administradores excluem cadastros de produtos, preservando o historico.
+- Gerentes lancam entradas manuais no estoque e saidas com motivo.
+- Gerentes consultam relatorios de entradas e saidas com impressao.
+- Na entrada manual, o gerente pode escolher um produto cadastrado ou criar um novo produto com codigo interno automatico.
+- Produtos em unidade podem ter conversao `ml por unidade`, permitindo entradas e saidas em ml sem quebrar os saldos.
 - Administradores acessam dashboards, relatorios, conferencia e logs de auditoria.
 - Administradores fazem balanco de estoque, registram divergencias e podem aplicar ajustes auditados.
 - Todas as acoes relevantes geram log.

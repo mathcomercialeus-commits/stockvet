@@ -23,10 +23,7 @@ const roleNames = {
 };
 
 const locations = [
-  ['internal', 'Estoque interno'],
-  ['consultorio1', 'Consultorio 1'],
-  ['consultorio2', 'Consultorio 2'],
-  ['internacao', 'Internacao']
+  ['internal', 'Estoque']
 ];
 
 function exec(sql) {
@@ -207,6 +204,18 @@ function migrateSchema() {
   run('UPDATE movements SET quantity_base = quantity WHERE quantity_base IS NULL');
   run('UPDATE vet_record_items SET quantity_base = quantity WHERE quantity_base IS NULL');
   run('UPDATE stock_audit_items SET counted_base = counted_quantity WHERE counted_base IS NULL');
+  consolidateLegacyStockLocations();
+}
+
+function consolidateLegacyStockLocations() {
+  run(`
+    INSERT INTO stock_balances (product_id, location, quantity)
+    SELECT product_id, 'internal', SUM(quantity)
+    FROM stock_balances
+    GROUP BY product_id
+    ON CONFLICT(product_id, location) DO UPDATE SET quantity = excluded.quantity
+  `);
+  run("DELETE FROM stock_balances WHERE location <> 'internal'");
 }
 
 function nextInternalSku() {
@@ -443,7 +452,7 @@ function inventorySnapshot({ includeInactive = false } = {}) {
         balances: Object.fromEntries(locations.map(([id]) => [id, 0]))
       });
     }
-    if (row.location) products.get(row.id).balances[row.location] = row.quantity;
+    if (row.location && locationIsValid(row.location)) products.get(row.id).balances[row.location] = row.quantity;
   });
   return [...products.values()];
 }
@@ -494,7 +503,7 @@ function dashboards() {
   const totalsByLocation = Object.fromEntries(locations.map(([id]) => [id, 0]));
   products.forEach((product) => {
     Object.entries(product.balances).forEach(([location, quantity]) => {
-      totalsByLocation[location] += quantity;
+      if (locationIsValid(location)) totalsByLocation[location] += quantity;
     });
   });
   const lowStock = products.filter((product) => {
@@ -667,11 +676,8 @@ function handleApi(req, res, pathname) {
         const product = get('SELECT id, sku, name, active FROM products WHERE id = @id', { id: productId });
         if (!product || !product.active) throw httpError(404, 'Cadastro nao encontrado.');
         const totalStock = productStockTotal(productId);
-        if (totalStock > 0.0001) {
-          throw httpError(400, 'Esse produto ainda tem saldo em estoque. Zere ou ajuste o saldo antes de excluir o cadastro.');
-        }
         run('UPDATE products SET active = 0 WHERE id = @id', { id: productId });
-        audit(user, 'product.deleted', 'product', productId, { sku: product.sku, name: product.name });
+        audit(user, 'product.deleted', 'product', productId, { sku: product.sku, name: product.name, totalStock });
         return sendJson(res, 200, { ok: true });
       }
 
@@ -756,66 +762,7 @@ function handleApi(req, res, pathname) {
       }
 
       if (req.method === 'POST' && pathname === '/api/stock/transfer') {
-        requireRole(user, ['admin']);
-        const body = await readBody(req);
-        const productId = Number(body.productId);
-        const quantity = Number(body.quantity);
-        const product = productId ? getProduct(productId) : null;
-        const quantityUnit = normalizeQuantityUnit(body.quantityUnit || product?.unit);
-        const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
-        const fromLocation = body.fromLocation;
-        const toLocation = body.toLocation;
-        const reason = String(body.reason || 'Transferencia entre estoques').trim();
-        if (
-          !productId ||
-          quantityBase <= 0 ||
-          !locationIsValid(fromLocation) ||
-          !locationIsValid(toLocation) ||
-          fromLocation === toLocation
-        ) {
-          throw httpError(400, 'Informe produto, origem, destino e quantidade validos.');
-        }
-        db.exec('BEGIN');
-        try {
-          changeStock(productId, fromLocation, -quantityBase);
-          changeStock(productId, toLocation, quantityBase);
-          run(
-            `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
-             VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
-            {
-              productId,
-              location: fromLocation,
-              quantity,
-              quantityUnit,
-              quantityBase,
-              reason,
-              reference: `Para ${toLocation}`,
-              createdBy: user.id,
-              createdAt: now()
-            }
-          );
-          run(
-            `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
-             VALUES (@productId, @location, 'entry', @quantity, @quantityUnit, @quantityBase, @reason, 'transfer', @reference, @createdBy, @createdAt)`,
-            {
-              productId,
-              location: toLocation,
-              quantity,
-              quantityUnit,
-              quantityBase,
-              reason,
-              reference: `De ${fromLocation}`,
-              createdBy: user.id,
-              createdAt: now()
-            }
-          );
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        audit(user, 'stock.transfer', 'movement', null, { productId, fromLocation, toLocation, quantity, quantityUnit, quantityBase, reason });
-        return sendJson(res, 201, { ok: true });
+        throw httpError(404, 'Modulo de transferencia desativado.');
       }
 
       if (req.method === 'POST' && pathname === '/api/stock/exit') {

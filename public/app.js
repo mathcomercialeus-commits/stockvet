@@ -18,7 +18,7 @@ const roleTabs = {
   ],
   manager: [
     ['dashboard', 'Painel'],
-    ['stock', 'Estoques'],
+    ['stock', 'Estoque'],
     ['entry', 'Entrada manual'],
     ['exit', 'Saida']
   ]
@@ -30,10 +30,7 @@ const roleInitialView = {
 };
 
 const locationLabels = {
-  internal: 'Estoque interno',
-  consultorio1: 'Consultorio 1',
-  consultorio2: 'Consultorio 2',
-  internacao: 'Internacao'
+  internal: 'Estoque'
 };
 
 function escapeHtml(value = '') {
@@ -60,11 +57,19 @@ function productOptions() {
     .join('');
 }
 
-function locationOptions(allowInternal = true) {
-  return state.data.locations
-    .filter((location) => allowInternal || location.id !== 'internal')
-    .map((location) => `<option value="${location.id}">${escapeHtml(location.name)}</option>`)
+function productLookupValue(product) {
+  return `${product.name} (${product.sku})`;
+}
+
+function productSuggestionOptions() {
+  return state.data.products
+    .filter((product) => product.active)
+    .map((product) => `<option value="${escapeHtml(productLookupValue(product))}"></option>`)
     .join('');
+}
+
+function locationLabel(location) {
+  return locationLabels[location] || 'Estoque';
 }
 
 async function api(path, options = {}) {
@@ -108,7 +113,7 @@ function renderLogin() {
           <h1>Vet Stock Control</h1>
           <p>Controle interno de estoque, conferencias e relatorios em uma rotina simples para clinicas veterinarias.</p>
         </div>
-        <p>Estoque interno, consultorios e internacao com rastreabilidade desde a entrada ate o uso em atendimento.</p>
+        <p>Estoque unico com rastreabilidade desde a entrada ate a saida.</p>
       </section>
       <section class="login-panel">
         <form class="login-card" data-action="login">
@@ -187,10 +192,10 @@ function renderView() {
 function renderDashboard() {
   const d = state.data.dashboard;
   return `
-    ${pageHeader('Dashboard', 'Resumo dos estoques e movimentos recentes.')}
+    ${pageHeader('Dashboard', 'Resumo do estoque e movimentos recentes.')}
     <section class="stat-grid">
       ${Object.entries(d.totalsByLocation)
-        .map(([location, total]) => `<div class="stat"><span>${locationLabels[location]}</span><strong>${total}</strong></div>`)
+        .map(([location, total]) => `<div class="stat"><span>${locationLabel(location)}</span><strong>${total}</strong></div>`)
         .join('')}
     </section>
     <section class="grid cols-2" style="margin-top:16px">
@@ -232,7 +237,7 @@ function renderLowStockTable(products) {
 
 function renderConference() {
   return `
-    ${pageHeader('Conferencia', 'Saldos separados por estoque.')}
+    ${pageHeader('Conferencia', 'Saldo atual do estoque.')}
     <section class="card">${renderInventory()}</section>
   `;
 }
@@ -244,7 +249,8 @@ function renderStockAudit() {
       <form class="card" data-action="stock-audit">
         <h2>Nova conferencia</h2>
         <div class="grid cols-2">
-          <label class="field">Estoque<select name="location" data-action="audit-location-change">${locationOptions(true)}</select></label>
+          <input name="location" type="hidden" value="internal" />
+          <label class="field">Estoque<input value="Estoque" disabled /></label>
           <label class="field">Aplicar ajuste
             <select name="applyAdjustments">
               <option value="false">Somente auditar</option>
@@ -301,9 +307,10 @@ function renderEntry() {
       <form data-action="manual-entry">
         <div class="grid cols-2">
           <input name="location" type="hidden" value="internal" />
-          <label class="field">Estoque<input value="Estoque interno" disabled /></label>
+          <label class="field">Estoque<input value="Estoque" disabled /></label>
           <label class="field">Referencia<input name="reference" placeholder="NF, pedido ou observacao" /></label>
         </div>
+        <datalist id="product-suggestions">${productSuggestionOptions()}</datalist>
         <div data-items>
           ${itemRow()}
         </div>
@@ -324,7 +331,8 @@ function renderExit() {
       <form data-action="stock-exit">
         <div class="grid cols-2">
           <label class="field">Produto<select name="productId">${productOptions()}</select></label>
-          <label class="field">Estoque<select name="location">${locationOptions(true)}</select></label>
+          <input name="location" type="hidden" value="internal" />
+          <label class="field">Estoque<input value="Estoque" disabled /></label>
           <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
           <label class="field">Medida<select name="quantityUnit">${quantityUnitOptions()}</select></label>
           <label class="field">Motivo<input name="reason" required placeholder="Perda, vencimento, ajuste..." /></label>
@@ -338,7 +346,7 @@ function renderExit() {
 
 function renderStock() {
   return `
-    ${pageHeader('Estoque', 'Saldos disponiveis por setor.')}
+    ${pageHeader('Estoque', 'Saldo disponivel.')}
     <section class="card">${renderInventory()}</section>
   `;
 }
@@ -362,11 +370,7 @@ function productItemRow() {
 function entryItemRow() {
   return `
     <div class="form-row entry-row" data-item-row>
-      <select name="productId">
-        <option value="">Novo produto</option>
-        ${productOptions()}
-      </select>
-      <input name="name" placeholder="Nome se for novo" />
+      <input name="name" list="product-suggestions" placeholder="Digite o produto" autocomplete="off" required />
       <select name="unit" title="Unidade do cadastro">${quantityUnitOptions()}</select>
       <input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="ml por un." />
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
@@ -405,7 +409,7 @@ function renderStockAudits(audits) {
               (audit) => `
               <tr>
                 <td>${fmtDate(audit.created_at)}</td>
-                <td>${locationLabels[audit.location] || audit.location}</td>
+                <td>${locationLabel(audit.location)}</td>
                 <td>${audit.item_count || 0}</td>
                 <td>${audit.divergence_count || 0}</td>
                 <td>${audit.apply_adjustments ? 'Aplicado' : 'Nao aplicado'}</td>
@@ -441,7 +445,7 @@ function renderInventory() {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Produto</th><th>SKU</th><th>Un.</th><th>ml/un.</th><th>Min.</th><th>Interno</th><th>Consultorio 1</th><th>Consultorio 2</th><th>Internacao</th></tr>
+          <tr><th>Produto</th><th>SKU</th><th>Un.</th><th>ml/un.</th><th>Min.</th><th>Saldo</th></tr>
         </thead>
         <tbody>
           ${state.data.products
@@ -454,9 +458,6 @@ function renderInventory() {
                 <td>${product.ml_per_unit || '-'}</td>
                 <td>${product.min_stock}</td>
                 <td>${formatBalance(product, 'internal')}</td>
-                <td>${formatBalance(product, 'consultorio1')}</td>
-                <td>${formatBalance(product, 'consultorio2')}</td>
-                <td>${formatBalance(product, 'internacao')}</td>
               </tr>`
             )
             .join('')}
@@ -497,7 +498,7 @@ function renderMovements(movements) {
                 <td>${fmtDate(m.created_at)}</td>
                 <td><span class="tag">${movementTypeLabel(m.type)}</span></td>
                 <td>${escapeHtml(m.product_name)}</td>
-                <td>${locationLabels[m.location] || m.location}</td>
+                <td>${locationLabel(m.location)}</td>
                 <td>${formatNumber(m.quantity)} ${escapeHtml(m.quantity_unit || '')}</td>
                 <td>${escapeHtml(m.reason || '-')}</td>
                 <td>${escapeHtml(m.actor_name)}</td>
@@ -631,8 +632,7 @@ function productTotal(product) {
 
 function deleteProductButton(product, total) {
   if (!product.active) return '-';
-  if (total > 0.0001) return '<span class="tag pending">Saldo aberto</span>';
-  return `<button class="btn danger" data-action="delete-product" data-id="${product.id}" data-name="${escapeHtml(product.name)}">Excluir</button>`;
+  return `<button class="btn danger" data-action="delete-product" data-id="${product.id}" data-name="${escapeHtml(product.name)}" data-total="${formatNumber(total)}" data-unit="${escapeHtml(product.unit)}">Excluir</button>`;
 }
 
 function roleLabel(role) {
@@ -651,15 +651,48 @@ function deleteUserButton(user) {
 
 function collectItems(form) {
   return [...form.querySelectorAll('[data-item-row]')]
-    .map((row) => ({
-      productId: Number(row.querySelector('[name="productId"]')?.value || 0),
-      name: row.querySelector('[name="name"]')?.value,
-      unit: row.querySelector('[name="unit"]')?.value,
-      mlPerUnit: row.querySelector('[name="mlPerUnit"]')?.value,
-      quantityUnit: row.querySelector('[name="quantityUnit"]')?.value,
-      quantity: Number(row.querySelector('[name="quantity"]').value)
-    }))
+    .map((row) => {
+      const typedName = row.querySelector('[name="name"]')?.value || '';
+      const matchedProduct = typedName ? findProductByEntryName(typedName) : null;
+      const selectedProductId = Number(row.querySelector('[name="productId"]')?.value || matchedProduct?.id || 0);
+      return {
+        productId: selectedProductId,
+        name: selectedProductId ? '' : typedName,
+        unit: row.querySelector('[name="unit"]')?.value,
+        mlPerUnit: row.querySelector('[name="mlPerUnit"]')?.value,
+        quantityUnit: row.querySelector('[name="quantityUnit"]')?.value,
+        quantity: Number(row.querySelector('[name="quantity"]').value)
+      };
+    })
     .filter((item) => (item.productId || item.name) && item.quantity > 0);
+}
+
+function normalizeSearchText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function findProductByEntryName(value) {
+  const normalized = normalizeSearchText(value);
+  return state.data.products.find((product) => {
+    if (!product.active) return false;
+    return (
+      normalizeSearchText(productLookupValue(product)) === normalized ||
+      normalizeSearchText(product.name) === normalized ||
+      normalizeSearchText(product.sku) === normalized
+    );
+  });
+}
+
+function syncEntryProductFields(input) {
+  const row = input.closest('[data-item-row]');
+  const product = findProductByEntryName(input.value);
+  if (!row || !product) return;
+  const unit = row.querySelector('[name="unit"]');
+  const quantityUnit = row.querySelector('[name="quantityUnit"]');
+  const mlPerUnit = row.querySelector('[name="mlPerUnit"]');
+  if (unit) unit.value = product.unit;
+  if (quantityUnit) quantityUnit.value = product.unit;
+  if (mlPerUnit && product.ml_per_unit) mlPerUnit.value = product.ml_per_unit;
 }
 
 function collectStockAuditItems(form) {
@@ -782,7 +815,12 @@ async function handleClick(event) {
       return;
     }
     if (action === 'delete-product') {
-      if (!confirm(`Excluir o cadastro ${target.dataset.name}?`)) return;
+      const total = Number(target.dataset.total || 0);
+      const balanceWarning =
+        total > 0
+          ? `\n\nEste cadastro tem saldo total de ${target.dataset.total} ${target.dataset.unit}. O cadastro sera inativado e o historico sera preservado.`
+          : '';
+      if (!confirm(`Excluir o cadastro ${target.dataset.name}?${balanceWarning}`)) return;
       await api(`/api/products/${target.dataset.id}`, { method: 'DELETE' });
       await refresh(true);
       notify('Cadastro excluido.');
@@ -798,8 +836,17 @@ async function handleClick(event) {
 }
 
 async function handleChange(event) {
+  if (event.target.matches('form[data-action="manual-entry"] input[name="name"]')) {
+    syncEntryProductFields(event.target);
+  }
   if (event.target.matches('[data-action="audit-location-change"]')) {
     updateAuditCurrentBalances(event.target);
+  }
+}
+
+function handleInput(event) {
+  if (event.target.matches('form[data-action="manual-entry"] input[name="name"]')) {
+    syncEntryProductFields(event.target);
   }
 }
 
@@ -830,6 +877,7 @@ async function hydrateLogs() {
 document.addEventListener('submit', handleSubmit);
 document.addEventListener('click', handleClick);
 document.addEventListener('change', handleChange);
+document.addEventListener('input', handleInput);
 
 api('/api/me')
   .then(() => refresh(false))
