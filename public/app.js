@@ -3,13 +3,19 @@ const app = document.querySelector('#app');
 const state = {
   user: null,
   data: null,
-  view: 'dashboard'
+  view: 'dashboard',
+  reportMonths: {
+    entry: '',
+    exit: ''
+  }
 };
 
 const roleTabs = {
   admin: [
     ['dashboard', 'Dashboard'],
-    ['conference', 'Conferencia'],
+    ['stock', 'Estoque'],
+    ['entry', 'Entrada manual'],
+    ['exit', 'Saida'],
     ['stockAudit', 'Balanco'],
     ['reports', 'Relatorios'],
     ['logs', 'Logs'],
@@ -48,6 +54,20 @@ function fmtDate(value) {
     dateStyle: 'short',
     timeStyle: 'short'
   }).format(new Date(value));
+}
+
+function monthKey(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthLabel(value) {
+  if (!value) return 'Todos os meses';
+  const [year, month] = value.split('-').map(Number);
+  if (!year || !month) return 'Todos os meses';
+  return new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(year, month - 1, 1));
 }
 
 function productOptions() {
@@ -176,7 +196,6 @@ function pageHeader(title, subtitle = '') {
 function renderView() {
   const views = {
     dashboard: renderDashboard,
-    conference: renderConference,
     stockAudit: renderStockAudit,
     reports: renderReports,
     logs: renderLogs,
@@ -235,13 +254,6 @@ function renderLowStockTable(products) {
   `;
 }
 
-function renderConference() {
-  return `
-    ${pageHeader('Conferencia', 'Saldo atual do estoque.')}
-    <section class="card">${renderInventory()}</section>
-  `;
-}
-
 function renderStockAudit() {
   return `
     ${pageHeader('Balanco de estoque', 'Conte o estoque fisico, compare com o sistema e gere auditoria.')}
@@ -279,10 +291,11 @@ function renderStockAudit() {
 
 function renderReports() {
   return `
-    ${pageHeader('Relatorios', 'Visao consolidada para administracao.')}
-    <section class="card"><h2>Estoque</h2>${renderInventory()}</section>
-    <section class="card" style="margin-top:16px"><h2>Auditorias de estoque</h2>${renderStockAudits(state.data.stockAudits || [])}</section>
-    <section class="card" style="margin-top:16px"><h2>Movimentos</h2>${renderMovements(state.data.movements)}</section>
+    ${pageHeader('Relatorios', 'Entradas, saidas e historico do estoque.')}
+    ${renderMovementReport('entry', 'Todas as entradas')}
+    ${renderMovementReport('exit', 'Relatorio de saidas')}
+    <section class="card screen-only" style="margin-top:16px"><h2>Estoque</h2>${renderInventory()}</section>
+    <section class="card screen-only" style="margin-top:16px"><h2>Auditorias de estoque</h2>${renderStockAudits(state.data.stockAudits || [])}</section>
   `;
 }
 
@@ -315,6 +328,7 @@ function renderEntry() {
           ${itemRow()}
         </div>
         <div class="actions" style="margin-top:12px">
+          <button class="btn secondary" type="button" data-action="add-item">Adicionar produto</button>
           <button class="btn" type="submit">Salvar entrada</button>
         </div>
       </form>
@@ -329,14 +343,17 @@ function renderExit() {
     <section class="card no-print">
       <form data-action="stock-exit">
         <div class="grid cols-2">
-          <label class="field">Produto<select name="productId">${productOptions()}</select></label>
           <input name="location" type="hidden" value="internal" />
           <label class="field">Estoque<input value="Estoque" disabled /></label>
-          <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
-          <label class="field">Medida<select name="quantityUnit">${quantityUnitOptions()}</select></label>
           <label class="field">Motivo<input name="reason" required placeholder="Perda, vencimento, ajuste..." /></label>
         </div>
-        <button class="btn full" type="submit">Salvar saida</button>
+        <div data-items>
+          ${productItemRow()}
+        </div>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn secondary" type="button" data-action="add-item">Adicionar produto</button>
+          <button class="btn" type="submit">Salvar saida</button>
+        </div>
       </form>
     </section>
     ${renderMovementReport('exit', 'Relatorio de saidas')}
@@ -360,7 +377,6 @@ function productItemRow() {
     <div class="form-row" data-item-row>
       <select name="productId">${productOptions()}</select>
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
-      <select name="quantityUnit">${quantityUnitOptions()}</select>
       <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
@@ -371,6 +387,7 @@ function entryItemRow() {
     <div class="form-row entry-row" data-item-row>
       <input name="name" list="product-suggestions" placeholder="Digite o produto" autocomplete="off" required />
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
+      <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
 }
@@ -511,23 +528,34 @@ function movementTypeLabel(type) {
 }
 
 function movementsByType(type) {
-  return (state.data.movements || []).filter((movement) => movement.type === type);
+  const selectedMonth = state.reportMonths[type] || '';
+  return (state.data.movements || []).filter((movement) => {
+    if (movement.type !== type) return false;
+    return !selectedMonth || monthKey(movement.created_at) === selectedMonth;
+  });
 }
 
 function renderMovementReport(type, title) {
   const movements = movementsByType(type);
+  const selectedMonth = state.reportMonths[type] || '';
   return `
-    <section class="card print-section" style="margin-top:16px">
+    <section class="card print-section" data-report-type="${type}" style="margin-top:16px">
       <div class="report-heading">
         <div>
           <h2>${title}</h2>
-          <div class="muted">${movements.length} movimento(s) registrado(s)</div>
+          <div class="muted">${movements.length} movimento(s) registrado(s) - ${monthLabel(selectedMonth)}</div>
         </div>
-        <button class="btn secondary screen-only" type="button" data-action="print-report">Imprimir relatorio</button>
+        <div class="report-actions screen-only">
+          <label class="field compact">Mes
+            <input name="reportMonth" type="month" value="${escapeHtml(selectedMonth)}" data-action="report-month-filter" data-report-type="${type}" />
+          </label>
+          <button class="btn secondary" type="button" data-action="clear-report-month" data-report-type="${type}">Limpar</button>
+          <button class="btn secondary" type="button" data-action="print-report" data-report-type="${type}">Imprimir relatorio</button>
+        </div>
       </div>
       <div class="print-only">
         <h1>${title}</h1>
-        <p>Gerado em ${fmtDate(new Date().toISOString())}</p>
+        <p>${monthLabel(selectedMonth)} - gerado em ${fmtDate(new Date().toISOString())}</p>
       </div>
       ${renderMovements(movements)}
     </section>
@@ -653,7 +681,8 @@ function collectItems(form) {
       return {
         productId: selectedProductId,
         name: selectedProductId ? '' : typedName,
-        quantity: Number(row.querySelector('[name="quantity"]').value)
+        quantity: Number(row.querySelector('[name="quantity"]').value),
+        quantityUnit: row.querySelector('[name="quantityUnit"]')?.value
       };
     })
     .filter((item) => (item.productId || item.name) && item.quantity > 0);
@@ -726,12 +755,11 @@ async function handleSubmit(event) {
       notify('Entrada registrada.');
     }
     if (action === 'stock-exit') {
-      await api('/api/stock/exit', { method: 'POST', body: JSON.stringify(data) });
+      await api('/api/stock/exit', {
+        method: 'POST',
+        body: JSON.stringify({ location: data.location, reason: data.reason, items: collectItems(form) })
+      });
       notify('Saida registrada.');
-    }
-    if (action === 'stock-transfer') {
-      await api('/api/stock/transfer', { method: 'POST', body: JSON.stringify(data) });
-      notify('Transferencia registrada.');
     }
     if (action === 'stock-audit') {
       await api('/api/stock-audits', {
@@ -756,7 +784,7 @@ async function handleSubmit(event) {
 }
 
 async function handleClick(event) {
-  const target = event.target.closest('button') || event.target.closest('[data-dropzone]');
+  const target = event.target.closest('button');
   if (!target) return;
 
   if (target.dataset.view) {
@@ -813,7 +841,13 @@ async function handleClick(event) {
       return;
     }
     if (action === 'print-report') {
+      if (target.dataset.reportType) document.body.dataset.printReport = target.dataset.reportType;
       window.print();
+      return;
+    }
+    if (action === 'clear-report-month') {
+      state.reportMonths[target.dataset.reportType] = '';
+      renderApp();
       return;
     }
   } catch (error) {
@@ -824,6 +858,10 @@ async function handleClick(event) {
 async function handleChange(event) {
   if (event.target.matches('form[data-action="manual-entry"] input[name="name"]')) {
     syncEntryProductFields(event.target);
+  }
+  if (event.target.matches('[data-action="report-month-filter"]')) {
+    state.reportMonths[event.target.dataset.reportType] = event.target.value;
+    renderApp();
   }
   if (event.target.matches('[data-action="audit-location-change"]')) {
     updateAuditCurrentBalances(event.target);
@@ -864,6 +902,9 @@ document.addEventListener('submit', handleSubmit);
 document.addEventListener('click', handleClick);
 document.addEventListener('change', handleChange);
 document.addEventListener('input', handleInput);
+window.addEventListener('afterprint', () => {
+  delete document.body.dataset.printReport;
+});
 
 api('/api/me')
   .then(() => refresh(false))

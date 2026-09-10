@@ -174,7 +174,7 @@ function initDb() {
       ['MED-001', 'Dipirona 500mg/ml', 'ml', 20],
       ['MAT-002', 'Seringa 5ml', 'un', 50],
       ['HIG-003', 'Clorexidina 2%', 'ml', 100],
-      ['MED-004', 'Enrofloxacino 50mg', 'cp', 30]
+      ['MED-004', 'Enrofloxacino 50mg', 'un', 30]
     ].forEach(([sku, name, unit, minStock]) => {
       const id = run(
         'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, @minStock, @createdAt)',
@@ -204,6 +204,7 @@ function migrateSchema() {
   run('UPDATE movements SET quantity_base = quantity WHERE quantity_base IS NULL');
   run('UPDATE vet_record_items SET quantity_base = quantity WHERE quantity_base IS NULL');
   run('UPDATE stock_audit_items SET counted_base = counted_quantity WHERE counted_base IS NULL');
+  run("UPDATE products SET unit = 'un' WHERE unit <> 'ml'");
   consolidateLegacyStockLocations();
 }
 
@@ -477,27 +478,6 @@ function movementRows(limit = 100) {
   );
 }
 
-function vetRecords(user) {
-  const scope = user.role === 'veterinarian' ? 'WHERE vr.veterinarian_id = @userId' : '';
-  const params = user.role === 'veterinarian' ? { userId: user.id } : {};
-  const records = all(
-    `SELECT vr.*, u.name AS veterinarian_name, reviewer.name AS reviewer_name
-     FROM vet_records vr
-     JOIN users u ON u.id = vr.veterinarian_id
-     LEFT JOIN users reviewer ON reviewer.id = vr.reviewer_id
-     ${scope}
-     ORDER BY vr.created_at DESC`,
-    params
-  );
-  const items = all(`
-    SELECT vri.record_id, vri.product_id, vri.quantity, vri.quantity_unit, vri.quantity_base, p.name AS product_name, p.sku, p.unit, p.ml_per_unit
-    FROM vet_record_items vri
-    JOIN products p ON p.id = vri.product_id
-  `);
-  const grouped = Map.groupBy(items, (item) => item.record_id);
-  return records.map((record) => ({ ...record, items: grouped.get(record.id) || [] }));
-}
-
 function dashboards() {
   const products = inventorySnapshot();
   const totalsByLocation = Object.fromEntries(locations.map(([id]) => [id, 0]));
@@ -510,52 +490,13 @@ function dashboards() {
     const total = Object.values(product.balances).reduce((sum, value) => sum + Number(value), 0);
     return total <= product.min_stock;
   });
-  const pendingRecords = get("SELECT COUNT(*) AS total FROM vet_records WHERE status = 'pending'").total;
   const movementsToday = get("SELECT COUNT(*) AS total FROM movements WHERE date(created_at) = date('now')").total;
-  return { totalsByLocation, lowStock, pendingRecords, movementsToday };
-}
-
-function parseXmlProducts(xml) {
-  const cleaned = xml.replace(/\r?\n/g, ' ');
-  const detBlocks = [...cleaned.matchAll(/<det\b[^>]*>(.*?)<\/det>/gi)].map((match) => match[1]);
-  const blocks = detBlocks.length ? detBlocks : [...cleaned.matchAll(/<prod\b[^>]*>(.*?)<\/prod>/gi)].map((match) => match[1]);
-  return blocks
-    .map((block) => {
-      const prod = block.match(/<prod\b[^>]*>(.*?)<\/prod>/i)?.[1] || block;
-      const text = (tag) => prod.match(new RegExp(`<${tag}[^>]*>(.*?)<\\/${tag}>`, 'i'))?.[1]?.trim() || '';
-      const sku = text('cProd') || text('sku');
-      const name = text('xProd') || text('name');
-      const unit = text('uCom') || text('unit') || 'un';
-      const quantity = Number(String(text('qCom') || text('quantity') || '0').replace(',', '.'));
-      return { sku, name, unit, quantity: Number.isFinite(quantity) ? quantity : 0 };
-    })
-    .filter((item) => item.sku && item.name && item.quantity > 0);
-}
-
-function ensureProductFromXml(item, actor) {
-  const existing = get('SELECT id FROM products WHERE sku = @sku', { sku: item.sku });
-  const mlPerUnit = normalizeMlPerUnit(item.mlPerUnit);
-  if (existing) {
-    updateMlPerUnitIfNeeded(existing.id, mlPerUnit);
-    return existing.id;
-  }
-  const unit = normalizeUnit(item.unit);
-  const id = run(
-    'INSERT INTO products (sku, name, unit, ml_per_unit, min_stock, created_at) VALUES (@sku, @name, @unit, @mlPerUnit, 0, @createdAt)',
-    { sku: item.sku, name: item.name, unit, mlPerUnit, createdAt: now() }
-  ).lastInsertRowid;
-  locations.forEach(([location]) => setBalance(id, location, 0));
-  audit(actor, 'product.created_from_xml', 'product', id, { ...item, unit, mlPerUnit });
-  return id;
+  return { totalsByLocation, lowStock, movementsToday };
 }
 
 function visibleUsersFor(user) {
-  if (user.role === 'veterinarian') return [];
-  const sql =
-    user.role === 'manager'
-      ? "SELECT id, name, email, role, active, created_at FROM users WHERE role = 'veterinarian' ORDER BY name"
-      : 'SELECT id, name, email, role, active, created_at FROM users ORDER BY name';
-  return all(sql);
+  if (user.role !== 'admin') return [];
+  return all("SELECT id, name, email, role, active, created_at FROM users WHERE role IN ('admin', 'manager') ORDER BY name");
 }
 
 function stockAuditRows(limit = 50) {
@@ -640,7 +581,6 @@ function handleApi(req, res, pathname) {
           locations: locations.map(([id, name]) => ({ id, name })),
           products: inventorySnapshot(),
           dashboard: dashboards(),
-          vetRecords: vetRecords(user),
           movements: user.role === 'admin' ? movementRows(500) : movementRows(1000),
           users: visibleUsersFor(user),
           stockAudits: user.role === 'admin' ? stockAuditRows(25) : []
@@ -737,19 +677,15 @@ function handleApi(req, res, pathname) {
         db.exec('BEGIN');
         try {
           items.forEach((item) => {
-            const entryItem =
-              body.source === 'xml' && body.unit
-                ? { ...item, unit: normalizeUnit(body.unit), mlPerUnit: body.mlPerUnit }
-                : item;
-            const productId = body.source === 'xml' ? ensureProductFromXml(entryItem, user) : ensureManualProduct(entryItem, user);
+            const productId = ensureManualProduct(item, user);
             const product = getProduct(productId);
             const quantity = Number(item.quantity);
-            const quantityUnit = normalizeQuantityUnit(entryItem.quantityUnit || entryItem.unit || product.unit);
+            const quantityUnit = normalizeQuantityUnit(item.quantityUnit || product.unit);
             const quantityBase = toStockQuantity(product, quantity, quantityUnit);
             changeStock(productId, location, quantityBase);
             tx.run`
               INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
-              VALUES (${productId}, ${location}, 'entry', ${quantity}, ${quantityUnit}, ${quantityBase}, ${body.reason || 'Entrada de estoque'}, ${body.source || 'manual'}, ${body.reference || null}, ${user.id}, ${now()})
+              VALUES (${productId}, ${location}, 'entry', ${quantity}, ${quantityUnit}, ${quantityBase}, ${body.reason || 'Entrada de estoque'}, 'manual', ${body.reference || null}, ${user.id}, ${now()})
             `;
           });
           db.exec('COMMIT');
@@ -757,7 +693,7 @@ function handleApi(req, res, pathname) {
           db.exec('ROLLBACK');
           throw error;
         }
-        audit(user, 'stock.entry', 'movement', null, { location, source: body.source || 'manual', count: items.length });
+        audit(user, 'stock.entry', 'movement', null, { location, source: 'manual', count: items.length });
         return sendJson(res, 201, { ok: true });
       }
 
@@ -768,29 +704,55 @@ function handleApi(req, res, pathname) {
       if (req.method === 'POST' && pathname === '/api/stock/exit') {
         requireRole(user, ['admin', 'manager']);
         const body = await readBody(req);
-        const productId = Number(body.productId);
-        const quantity = Number(body.quantity);
-        const product = productId ? getProduct(productId) : null;
-        const quantityUnit = normalizeQuantityUnit(body.quantityUnit || product?.unit);
-        const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
+        const location = body.location || 'internal';
         const reason = String(body.reason || '').trim();
-        if (!locationIsValid(body.location) || !productId || quantityBase <= 0 || !reason) {
-          throw httpError(400, 'Informe produto, estoque, quantidade e motivo.');
+        const items =
+          Array.isArray(body.items) && body.items.length
+            ? body.items
+            : [{ productId: body.productId, quantity: body.quantity, quantityUnit: body.quantityUnit }];
+        if (!locationIsValid(location) || !reason || !items.length) {
+          throw httpError(400, 'Informe estoque, motivo e ao menos um produto.');
         }
-        changeStock(productId, body.location, -quantityBase);
-        const id = run(
-          `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, created_by, created_at)
-           VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'manual', @createdBy, @createdAt)`,
-          { productId, location: body.location, quantity, quantityUnit, quantityBase, reason, createdBy: user.id, createdAt: now() }
-        ).lastInsertRowid;
-        audit(user, 'stock.exit', 'movement', id, { productId, location: body.location, quantity, quantityUnit, quantityBase, reason });
-        return sendJson(res, 201, { ok: true, id });
+
+        const movementIds = [];
+        const movementItems = [];
+        db.exec('BEGIN');
+        try {
+          items.forEach((item) => {
+            const productId = Number(item.productId);
+            const quantity = Number(item.quantity);
+            const product = productId ? getProduct(productId) : null;
+            const quantityUnit = normalizeQuantityUnit(item.quantityUnit || product?.unit);
+            const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
+            if (!product || !Number.isFinite(quantity) || quantity <= 0 || quantityBase <= 0) {
+              throw httpError(400, 'Informe produto e quantidade validos para todos os itens.');
+            }
+            changeStock(productId, location, -quantityBase);
+            const id = run(
+              `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, created_by, created_at)
+               VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'manual', @createdBy, @createdAt)`,
+              { productId, location, quantity, quantityUnit, quantityBase, reason, createdBy: user.id, createdAt: now() }
+            ).lastInsertRowid;
+            movementIds.push(id);
+            movementItems.push({ productId, quantity, quantityUnit, quantityBase });
+          });
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+
+        audit(user, 'stock.exit', 'movement', movementIds.join(','), {
+          location,
+          reason,
+          count: movementItems.length,
+          items: movementItems
+        });
+        return sendJson(res, 201, { ok: true, ids: movementIds });
       }
 
       if (req.method === 'POST' && pathname === '/api/xml/preview') {
-        requireRole(user, ['admin']);
-        const body = await readBody(req);
-        return sendJson(res, 200, { items: parseXmlProducts(body.xml || body.raw || '') });
+        throw httpError(404, 'Modulo de entrada XML desativado.');
       }
 
       if (req.method === 'POST' && pathname === '/api/stock-audits') {
@@ -901,8 +863,7 @@ function handleApi(req, res, pathname) {
           dashboard: dashboards(),
           inventory: inventorySnapshot({ includeInactive: true }),
           movements: movementRows(500),
-          vetRecords: vetRecords(user),
-          users: all('SELECT id, name, email, role, active, created_at FROM users ORDER BY role, name'),
+          users: all("SELECT id, name, email, role, active, created_at FROM users WHERE role IN ('admin', 'manager') ORDER BY role, name"),
           stockAudits: stockAuditRows(100),
           logs
         });

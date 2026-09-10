@@ -380,13 +380,13 @@ th {
 
 .form-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 120px 120px 42px;
+  grid-template-columns: minmax(180px, 1fr) 140px 42px;
   gap: 8px;
   margin-top: 8px;
 }
 
 .form-row.entry-row {
-  grid-template-columns: minmax(240px, 1fr) 140px;
+  grid-template-columns: minmax(240px, 1fr) 140px 42px;
 }
 
 .icon-btn {
@@ -441,47 +441,6 @@ th {
   display: grid;
 }
 
-.xml-preview {
-  max-height: 260px;
-  overflow: auto;
-}
-
-.file-input {
-  display: none;
-}
-
-.dropzone {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 190px;
-  margin-top: 16px;
-  border: 2px dashed #9fc8b7;
-  border-radius: 8px;
-  background: #f5fbf8;
-  color: var(--brand-strong);
-  padding: 22px;
-  text-align: center;
-  transition:
-    border-color 160ms ease,
-    background 160ms ease,
-    transform 160ms ease;
-}
-
-.dropzone strong {
-  font-size: 20px;
-}
-
-.dropzone span {
-  color: var(--muted);
-}
-
-.dropzone.dragging {
-  border-color: var(--brand);
-  background: #e9f8f1;
-  transform: translateY(-1px);
-}
-
 .audit-counts {
   max-height: 480px;
 }
@@ -499,6 +458,18 @@ th {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 14px;
+}
+
+.report-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.field.compact {
+  min-width: 180px;
+  margin-top: 0;
 }
 
 .print-only {
@@ -529,6 +500,15 @@ th {
     border: 0;
     box-shadow: none;
     padding: 0;
+  }
+
+  body[data-print-report] .print-section[data-report-type] {
+    display: none;
+  }
+
+  body[data-print-report="entry"] .print-section[data-report-type="entry"],
+  body[data-print-report="exit"] .print-section[data-report-type="exit"] {
+    display: block;
   }
 
   .report-heading {

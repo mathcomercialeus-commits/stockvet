@@ -7,11 +7,12 @@ Sistema interno de controle de estoque unico para clinica veterinaria.
 - Login funcional com sessoes e perfis ativos: administrador e gerente.
 - Administradores criam e excluem usuarios administrativos.
 - Administradores excluem cadastros de produtos, preservando o historico.
-- Gerentes lancam entradas manuais no estoque e saidas com motivo.
-- Gerentes consultam relatorios de entradas e saidas com impressao.
-- Na entrada manual, o gerente pode escolher um produto cadastrado ou criar um novo produto com codigo interno automatico.
-- Produtos em unidade podem ter conversao `ml por unidade`, permitindo entradas e saidas em ml sem quebrar os saldos.
-- Administradores acessam dashboards, relatorios, conferencia e logs de auditoria.
+- Administradores e gerentes lancam entradas manuais no estoque e saidas com motivo.
+- Entradas e saidas aceitam mais de um produto na mesma operacao.
+- Administradores e gerentes consultam relatorios de entradas e saidas com filtro por mes e impressao.
+- Na entrada manual, o usuario pode escolher um produto cadastrado pelo nome ou criar um novo produto com codigo interno automatico.
+- Produtos em unidade podem ter conversao `ml por unidade`, preservando os saldos.
+- Administradores acessam dashboard, estoque, entradas, saidas, relatorios e logs de auditoria.
 - Administradores fazem balanco de estoque, registram divergencias e podem aplicar ajustes auditados.
 - Todas as acoes relevantes geram log.
 
