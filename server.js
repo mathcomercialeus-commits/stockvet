@@ -357,6 +357,10 @@ function readSession(req) {
     sessions.delete(token);
     return null;
   }
+  if (user.role === 'veterinarian') {
+    sessions.delete(token);
+    return null;
+  }
   session.expiresAt = Date.now() + SESSION_TTL_MS;
   return { token, user };
 }
@@ -390,7 +394,6 @@ function requireRole(user, roles) {
 
 function canManageUser(actor, targetRole) {
   if (actor.role === 'admin') return ['admin', 'manager'].includes(targetRole);
-  if (actor.role === 'manager') return targetRole === 'veterinarian';
   return false;
 }
 
@@ -590,6 +593,9 @@ function handleApi(req, res, pathname) {
         if (!user || !verifyPassword(body.password || '', user.password_hash)) {
           throw httpError(401, 'E-mail ou senha invalidos.');
         }
+        if (user.role === 'veterinarian') {
+          throw httpError(403, 'Perfil veterinario desativado.');
+        }
         const token = createSession(user);
         audit(user, 'auth.login', 'session', user.id);
         return sendJson(res, 200, { user: publicUser(user) }, {
@@ -626,7 +632,7 @@ function handleApi(req, res, pathname) {
           products: inventorySnapshot(),
           dashboard: dashboards(),
           vetRecords: vetRecords(user),
-          movements: user.role === 'admin' ? movementRows(250) : movementRows(50),
+          movements: user.role === 'admin' ? movementRows(500) : movementRows(1000),
           users: visibleUsersFor(user),
           stockAudits: user.role === 'admin' ? stockAuditRows(25) : []
         });
@@ -670,25 +676,11 @@ function handleApi(req, res, pathname) {
       }
 
       if (req.method === 'POST' && pathname === '/api/users/veterinarians') {
-        requireRole(user, ['admin', 'manager']);
-        const body = await readBody(req);
-        if (!body.name || !body.email || !body.password) throw httpError(400, 'Preencha nome, e-mail e senha.');
-        const id = run(
-          'INSERT INTO users (name, email, password_hash, role, created_at) VALUES (@name, @email, @passwordHash, @role, @createdAt)',
-          {
-            name: body.name.trim(),
-            email: body.email.trim().toLowerCase(),
-            passwordHash: hashPassword(body.password),
-            role: 'veterinarian',
-            createdAt: now()
-          }
-        ).lastInsertRowid;
-        audit(user, 'user.veterinarian_created', 'user', id, { email: body.email });
-        return sendJson(res, 201, { ok: true, id });
+        throw httpError(404, 'Modulo veterinario desativado.');
       }
 
       if (req.method === 'POST' && pathname === '/api/users') {
-        requireRole(user, ['admin', 'manager']);
+        requireRole(user, ['admin']);
         const body = await readBody(req);
         const role = String(body.role || '').trim();
         if (!canManageUser(user, role)) throw httpError(403, 'Voce nao pode criar esse perfil.');
@@ -709,7 +701,7 @@ function handleApi(req, res, pathname) {
 
       const deleteUserMatch = pathname.match(/^\/api\/users\/(\d+)$/);
       if (req.method === 'DELETE' && deleteUserMatch) {
-        requireRole(user, ['admin', 'manager']);
+        requireRole(user, ['admin']);
         const targetId = Number(deleteUserMatch[1]);
         const target = get('SELECT id, name, email, role, active FROM users WHERE id = @id', { id: targetId });
         if (!target) throw httpError(404, 'Usuario nao encontrado.');
@@ -746,7 +738,7 @@ function handleApi(req, res, pathname) {
             const productId = body.source === 'xml' ? ensureProductFromXml(entryItem, user) : ensureManualProduct(entryItem, user);
             const product = getProduct(productId);
             const quantity = Number(item.quantity);
-            const quantityUnit = normalizeQuantityUnit(entryItem.unit || product.unit);
+            const quantityUnit = normalizeQuantityUnit(entryItem.quantityUnit || entryItem.unit || product.unit);
             const quantityBase = toStockQuantity(product, quantity, quantityUnit);
             changeStock(productId, location, quantityBase);
             tx.run`
@@ -764,7 +756,7 @@ function handleApi(req, res, pathname) {
       }
 
       if (req.method === 'POST' && pathname === '/api/stock/transfer') {
-        requireRole(user, ['admin', 'manager']);
+        requireRole(user, ['admin']);
         const body = await readBody(req);
         const productId = Number(body.productId);
         const quantity = Number(body.quantity);
@@ -849,7 +841,7 @@ function handleApi(req, res, pathname) {
       }
 
       if (req.method === 'POST' && pathname === '/api/xml/preview') {
-        requireRole(user, ['admin', 'manager']);
+        requireRole(user, ['admin']);
         const body = await readBody(req);
         return sendJson(res, 200, { items: parseXmlProducts(body.xml || body.raw || '') });
       }
@@ -947,102 +939,12 @@ function handleApi(req, res, pathname) {
       }
 
       if (req.method === 'POST' && pathname === '/api/vet-records') {
-        requireRole(user, ['admin', 'manager', 'veterinarian']);
-        const body = await readBody(req);
-        const commandNumber = String(body.commandNumber || '').trim();
-        const items = Array.isArray(body.items) ? body.items : [];
-        if (!commandNumber || !locationIsValid(body.location) || !items.length) {
-          throw httpError(400, 'Informe comanda, setor e produtos.');
-        }
-        db.exec('BEGIN');
-        let recordId;
-        try {
-          recordId = run(
-            `INSERT INTO vet_records (command_number, location, veterinarian_id, notes, created_at)
-             VALUES (@commandNumber, @location, @veterinarianId, @notes, @createdAt)`,
-            {
-              commandNumber,
-              location: body.location,
-              veterinarianId: user.role === 'veterinarian' ? user.id : Number(body.veterinarianId || user.id),
-              notes: body.notes || null,
-              createdAt: now()
-            }
-          ).lastInsertRowid;
-          items.forEach((item) => {
-            const productId = Number(item.productId);
-            const quantity = Number(item.quantity);
-            const product = productId ? getProduct(productId) : null;
-            const quantityUnit = normalizeQuantityUnit(item.quantityUnit || product?.unit);
-            const quantityBase = product ? toStockQuantity(product, quantity, quantityUnit) : 0;
-            if (!productId || quantityBase <= 0) throw httpError(400, 'Item invalido.');
-            run(
-              `INSERT INTO vet_record_items (record_id, product_id, quantity, quantity_unit, quantity_base)
-               VALUES (@recordId, @productId, @quantity, @quantityUnit, @quantityBase)`,
-              { recordId, productId, quantity, quantityUnit, quantityBase }
-            );
-          });
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        audit(user, 'vet_record.created', 'vet_record', recordId, { commandNumber, location: body.location });
-        return sendJson(res, 201, { ok: true, id: recordId });
+        throw httpError(404, 'Modulo veterinario desativado.');
       }
 
       const approveMatch = pathname.match(/^\/api\/vet-records\/(\d+)\/(approve|reject)$/);
       if (req.method === 'POST' && approveMatch) {
-        requireRole(user, ['admin', 'manager']);
-        const recordId = Number(approveMatch[1]);
-        const action = approveMatch[2];
-        const body = await readBody(req);
-        const record = get('SELECT * FROM vet_records WHERE id = @id', { id: recordId });
-        if (!record) throw httpError(404, 'Registro nao encontrado.');
-        if (record.status !== 'pending') throw httpError(400, 'Registro ja revisado.');
-        const items = all('SELECT * FROM vet_record_items WHERE record_id = @recordId', { recordId });
-        db.exec('BEGIN');
-        try {
-          if (action === 'approve') {
-            items.forEach((item) => {
-              const quantityBase = Number(item.quantity_base || item.quantity);
-              changeStock(item.product_id, record.location, -quantityBase);
-              run(
-                `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, approved_record_id, created_at)
-                 VALUES (@productId, @location, 'vet_usage', @quantity, @quantityUnit, @quantityBase, @reason, 'veterinarian', @reference, @createdBy, @recordId, @createdAt)`,
-                {
-                  productId: item.product_id,
-                  location: record.location,
-                  quantity: item.quantity,
-                  quantityUnit: item.quantity_unit || 'un',
-                  quantityBase,
-                  reason: `Uso em atendimento - comanda ${record.command_number}`,
-                  reference: record.command_number,
-                  createdBy: user.id,
-                  recordId,
-                  createdAt: now()
-                }
-              );
-            });
-          }
-          run(
-            `UPDATE vet_records
-             SET status = @status, reviewer_id = @reviewerId, review_notes = @reviewNotes, reviewed_at = @reviewedAt
-             WHERE id = @id`,
-            {
-              status: action === 'approve' ? 'approved' : 'rejected',
-              reviewerId: user.id,
-              reviewNotes: body.reviewNotes || null,
-              reviewedAt: now(),
-              id: recordId
-            }
-          );
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
-        audit(user, `vet_record.${action}`, 'vet_record', recordId, { reviewNotes: body.reviewNotes || null });
-        return sendJson(res, 200, { ok: true });
+        throw httpError(404, 'Modulo veterinario desativado.');
       }
 
       if (req.method === 'GET' && pathname === '/api/reports') {

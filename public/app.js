@@ -3,9 +3,7 @@ const app = document.querySelector('#app');
 const state = {
   user: null,
   data: null,
-  view: 'dashboard',
-  xmlItems: [],
-  xmlText: ''
+  view: 'dashboard'
 };
 
 const roleTabs = {
@@ -22,23 +20,13 @@ const roleTabs = {
     ['dashboard', 'Painel'],
     ['stock', 'Estoques'],
     ['entry', 'Entrada manual'],
-    ['xml', 'Entrada XML'],
-    ['exit', 'Saida'],
-    ['transfer', 'Transferencias'],
-    ['vets', 'Veterinarios'],
-    ['approvals', 'Aprovacoes']
-  ],
-  veterinarian: [
-    ['attendance', 'Atendimento'],
-    ['myRecords', 'Meus registros'],
-    ['stock', 'Estoque']
+    ['exit', 'Saida']
   ]
 };
 
 const roleInitialView = {
   admin: 'dashboard',
-  manager: 'dashboard',
-  veterinarian: 'attendance'
+  manager: 'dashboard'
 };
 
 const locationLabels = {
@@ -46,12 +34,6 @@ const locationLabels = {
   consultorio1: 'Consultorio 1',
   consultorio2: 'Consultorio 2',
   internacao: 'Internacao'
-};
-
-const statusLabels = {
-  pending: 'Pendente',
-  approved: 'Aprovado',
-  rejected: 'Rejeitado'
 };
 
 function escapeHtml(value = '') {
@@ -124,7 +106,7 @@ function renderLogin() {
         <div class="brand-mark">VS</div>
         <div>
           <h1>Vet Stock Control</h1>
-          <p>Controle interno de estoque, conferencias, aprovacoes e relatorios em uma rotina simples para clinicas veterinarias.</p>
+          <p>Controle interno de estoque, conferencias e relatorios em uma rotina simples para clinicas veterinarias.</p>
         </div>
         <p>Estoque interno, consultorios e internacao com rastreabilidade desde a entrada ate o uso em atendimento.</p>
       </section>
@@ -148,8 +130,9 @@ function renderLogin() {
 }
 
 function renderApp() {
-  const tabs = roleTabs[state.user.role];
-  if (!tabs.some(([id]) => id === state.view)) state.view = roleInitialView[state.user.role];
+  const tabs = roleTabs[state.user.role] || roleTabs.manager;
+  const initialView = roleInitialView[state.user.role] || tabs[0]?.[0] || 'dashboard';
+  if (!tabs.some(([id]) => id === state.view)) state.view = initialView;
   app.innerHTML = `
     <div class="app-shell">
       <aside class="sidebar">
@@ -195,13 +178,7 @@ function renderView() {
     users: renderUsers,
     registrations: renderRegistrations,
     entry: renderEntry,
-    xml: renderXml,
     exit: renderExit,
-    transfer: renderTransfer,
-    vets: renderVets,
-    approvals: renderApprovals,
-    attendance: renderAttendance,
-    myRecords: renderMyRecords,
     stock: renderStock
   };
   return views[state.view]?.() || renderDashboard();
@@ -210,7 +187,7 @@ function renderView() {
 function renderDashboard() {
   const d = state.data.dashboard;
   return `
-    ${pageHeader('Dashboard', 'Resumo dos estoques, pendencias e movimentos recentes.')}
+    ${pageHeader('Dashboard', 'Resumo dos estoques e movimentos recentes.')}
     <section class="stat-grid">
       ${Object.entries(d.totalsByLocation)
         .map(([location, total]) => `<div class="stat"><span>${locationLabels[location]}</span><strong>${total}</strong></div>`)
@@ -223,8 +200,7 @@ function renderDashboard() {
       </div>
       <div class="card">
         <h2>Operacao</h2>
-        <div class="stat-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
-          <div class="stat"><span>Aprovacoes pendentes</span><strong>${d.pendingRecords}</strong></div>
+        <div class="stat-grid" style="grid-template-columns:1fr">
           <div class="stat"><span>Movimentos hoje</span><strong>${d.movementsToday}</strong></div>
         </div>
       </div>
@@ -298,10 +274,7 @@ function renderStockAudit() {
 function renderReports() {
   return `
     ${pageHeader('Relatorios', 'Visao consolidada para administracao.')}
-    <section class="grid cols-2">
-      <div class="card"><h2>Estoque</h2>${renderInventory()}</div>
-      <div class="card"><h2>Registros veterinarios</h2>${renderRecords(state.data.vetRecords)}</div>
-    </section>
+    <section class="card"><h2>Estoque</h2>${renderInventory()}</section>
     <section class="card" style="margin-top:16px"><h2>Auditorias de estoque</h2>${renderStockAudits(state.data.stockAudits || [])}</section>
     <section class="card" style="margin-top:16px"><h2>Movimentos</h2>${renderMovements(state.data.movements)}</section>
   `;
@@ -324,7 +297,7 @@ function renderLogs() {
 function renderEntry() {
   return `
     ${pageHeader('Entrada manual', 'Lancamento de produtos recebidos.')}
-    <section class="card">
+    <section class="card no-print">
       <form data-action="manual-entry">
         <div class="grid cols-2">
           <input name="location" type="hidden" value="internal" />
@@ -340,47 +313,14 @@ function renderEntry() {
         </div>
       </form>
     </section>
-  `;
-}
-
-function renderXml() {
-  return `
-    ${pageHeader('Entrada via XML', 'Importacao de itens de nota fiscal.')}
-    <section class="grid cols-2">
-      <form class="card" data-action="xml-preview">
-        <h2>XML</h2>
-        <input class="file-input" name="xmlFile" type="file" accept=".xml,text/xml,application/xml" />
-        <div class="dropzone" data-action="pick-xml" data-dropzone>
-          <strong>Solte o XML aqui</strong>
-          <span>ou selecione o arquivo da nota no computador</span>
-          <button class="btn secondary" type="button" data-action="pick-xml">Escolher XML</button>
-        </div>
-        <label class="field">Conteudo lido<textarea name="xml" placeholder="<NFe>...</NFe>" required>${escapeHtml(state.xmlText)}</textarea></label>
-        <button class="btn full" type="submit">Ler XML</button>
-      </form>
-      <form class="card" data-action="xml-entry">
-        <h2>Itens lidos</h2>
-        <input name="location" type="hidden" value="internal" />
-        <label class="field">Estoque<input value="Estoque interno" disabled /></label>
-        <label class="field">Tipo de unidade
-          <select name="unit">
-            <option value="un">Unidade</option>
-            <option value="ml">ml</option>
-          </select>
-        </label>
-        <label class="field">ml por unidade<input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="Ex.: 100" /></label>
-        <label class="field">Referencia<input name="reference" placeholder="Numero da nota" /></label>
-        <div class="xml-preview">${renderXmlItems()}</div>
-        <button class="btn full" type="submit">Confirmar entrada</button>
-      </form>
-    </section>
+    ${renderMovementReport('entry', 'Todas as entradas')}
   `;
 }
 
 function renderExit() {
   return `
     ${pageHeader('Saida manual', 'Baixa com motivo registrado.')}
-    <section class="card">
+    <section class="card no-print">
       <form data-action="stock-exit">
         <div class="grid cols-2">
           <label class="field">Produto<select name="productId">${productOptions()}</select></label>
@@ -392,78 +332,7 @@ function renderExit() {
         <button class="btn full" type="submit">Salvar saida</button>
       </form>
     </section>
-  `;
-}
-
-function renderTransfer() {
-  return `
-    ${pageHeader('Transferencias', 'Movimente produtos entre os quatro estoques.')}
-    <section class="grid cols-2">
-      <form class="card" data-action="stock-transfer">
-        <h2>Nova transferencia</h2>
-        <label class="field">Produto<select name="productId">${productOptions()}</select></label>
-        <div class="grid cols-2">
-          <label class="field">Origem<select name="fromLocation">${locationOptions(true)}</select></label>
-          <label class="field">Destino<select name="toLocation">${locationOptions(true)}</select></label>
-          <label class="field">Quantidade<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
-          <label class="field">Medida<select name="quantityUnit">${quantityUnitOptions()}</select></label>
-          <label class="field">Motivo<input name="reason" placeholder="Reposicao, remanejamento..." /></label>
-        </div>
-        <button class="btn full" type="submit">Transferir</button>
-      </form>
-      <div class="card"><h2>Saldos por estoque</h2>${renderInventory()}</div>
-    </section>
-  `;
-}
-
-function renderVets() {
-  return `
-    ${pageHeader('Veterinarios', 'Cadastro feito por gerente.')}
-    <section class="grid cols-2">
-      <form class="card" data-action="create-vet">
-        <h2>Novo veterinario</h2>
-        <label class="field">Nome<input name="name" required /></label>
-        <label class="field">E-mail<input name="email" type="email" required /></label>
-        <label class="field">Senha inicial<input name="password" type="password" required /></label>
-        <button class="btn full" type="submit">Cadastrar</button>
-      </form>
-      <div class="card"><h2>Cadastrados</h2>${renderUsersTable('veterinarian', true)}</div>
-    </section>
-  `;
-}
-
-function renderApprovals() {
-  const pending = state.data.vetRecords.filter((record) => record.status === 'pending');
-  return `
-    ${pageHeader('Aprovacoes', 'Registros feitos pelos veterinarios.')}
-    <section class="card">${pending.length ? renderRecords(pending, true) : '<div class="empty">Nenhum registro pendente.</div>'}</section>
-  `;
-}
-
-function renderAttendance() {
-  return `
-    ${pageHeader('Atendimento', 'Registro de uso por comanda.')}
-    <section class="card">
-      <form data-action="vet-record">
-        <div class="grid cols-2">
-          <label class="field">Numero da comanda<input name="commandNumber" required /></label>
-          <label class="field">Setor<select name="location">${locationOptions(false)}</select></label>
-        </div>
-        <label class="field">Observacoes<textarea name="notes"></textarea></label>
-        <div data-items>${itemRow()}</div>
-        <div class="actions" style="margin-top:12px">
-          <button class="btn secondary" type="button" data-action="add-item">Adicionar item</button>
-          <button class="btn" type="submit">Enviar para aprovacao</button>
-        </div>
-      </form>
-    </section>
-  `;
-}
-
-function renderMyRecords() {
-  return `
-    ${pageHeader('Meus registros', 'Historico enviado para conferencia.')}
-    <section class="card">${renderRecords(state.data.vetRecords)}</section>
+    ${renderMovementReport('exit', 'Relatorio de saidas')}
   `;
 }
 
@@ -493,13 +362,15 @@ function productItemRow() {
 function entryItemRow() {
   return `
     <div class="form-row entry-row" data-item-row>
-      <input name="name" placeholder="Nome do produto" required />
-      <select name="unit">
-        <option value="un">Unidade</option>
-        <option value="ml">ml</option>
+      <select name="productId">
+        <option value="">Novo produto</option>
+        ${productOptions()}
       </select>
+      <input name="name" placeholder="Nome se for novo" />
+      <select name="unit" title="Unidade do cadastro">${quantityUnitOptions()}</select>
       <input name="mlPerUnit" type="number" min="0.01" step="0.01" placeholder="ml por un." />
       <input name="quantity" type="number" min="0.01" step="0.01" placeholder="Qtd." required />
+      <select name="quantityUnit" title="Medida da quantidade">${quantityUnitOptions()}</select>
       <button class="icon-btn" type="button" data-action="remove-item" title="Remover">x</button>
     </div>
   `;
@@ -565,23 +436,6 @@ function renderStockAuditItems(items) {
   `;
 }
 
-function renderXmlItems() {
-  if (!state.xmlItems.length) return '<div class="empty">Aguardando XML.</div>';
-  return `
-    <table>
-      <thead><tr><th>SKU</th><th>Produto</th><th>Un.</th><th>Qtd.</th></tr></thead>
-      <tbody>
-        ${state.xmlItems
-          .map(
-            (item) =>
-              `<tr><td>${escapeHtml(item.sku)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.unit)}</td><td>${item.quantity}</td></tr>`
-          )
-          .join('')}
-      </tbody>
-    </table>
-  `;
-}
-
 function renderInventory() {
   return `
     <div class="table-wrap">
@@ -641,7 +495,7 @@ function renderMovements(movements) {
               (m) => `
               <tr>
                 <td>${fmtDate(m.created_at)}</td>
-                <td><span class="tag">${escapeHtml(m.type)}</span></td>
+                <td><span class="tag">${movementTypeLabel(m.type)}</span></td>
                 <td>${escapeHtml(m.product_name)}</td>
                 <td>${locationLabels[m.location] || m.location}</td>
                 <td>${formatNumber(m.quantity)} ${escapeHtml(m.quantity_unit || '')}</td>
@@ -656,36 +510,31 @@ function renderMovements(movements) {
   `;
 }
 
-function renderRecords(records, withActions = false) {
-  if (!records.length) return '<div class="empty">Nenhum registro encontrado.</div>';
+function movementTypeLabel(type) {
+  return { entry: 'Entrada', exit: 'Saida', vet_usage: 'Uso' }[type] || escapeHtml(type);
+}
+
+function movementsByType(type) {
+  return (state.data.movements || []).filter((movement) => movement.type === type);
+}
+
+function renderMovementReport(type, title) {
+  const movements = movementsByType(type);
   return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Data</th><th>Comanda</th><th>Setor</th><th>Vet</th><th>Itens</th><th>Status</th><th>Acoes</th></tr></thead>
-        <tbody>
-          ${records
-            .map(
-              (record) => `
-              <tr>
-                <td>${fmtDate(record.created_at)}</td>
-                <td>${escapeHtml(record.command_number)}</td>
-                <td>${locationLabels[record.location] || record.location}</td>
-                <td>${escapeHtml(record.veterinarian_name)}</td>
-                <td>${record.items.map((item) => `${escapeHtml(item.product_name)} (${formatNumber(item.quantity)} ${escapeHtml(item.quantity_unit || item.unit)})`).join('<br>')}</td>
-                <td><span class="tag ${record.status}">${statusLabels[record.status]}</span></td>
-                <td>
-                  ${
-                    withActions
-                      ? `<div class="actions"><button class="btn" data-action="approve-record" data-id="${record.id}">Aprovar</button><button class="btn danger" data-action="reject-record" data-id="${record.id}">Rejeitar</button></div>`
-                      : escapeHtml(record.review_notes || '-')
-                  }
-                </td>
-              </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
-    </div>
+    <section class="card print-section" style="margin-top:16px">
+      <div class="report-heading">
+        <div>
+          <h2>${title}</h2>
+          <div class="muted">${movements.length} movimento(s) registrado(s)</div>
+        </div>
+        <button class="btn secondary screen-only" type="button" data-action="print-report">Imprimir relatorio</button>
+      </div>
+      <div class="print-only">
+        <h1>${title}</h1>
+        <p>Gerado em ${fmtDate(new Date().toISOString())}</p>
+      </div>
+      ${renderMovements(movements)}
+    </section>
   `;
 }
 
@@ -721,7 +570,7 @@ function renderUsersTable(filterRole = '', withActions = false, allowedRoles = [
 }
 
 function renderUsers() {
-  const roles = state.user.role === 'admin' ? ['admin', 'manager'] : ['veterinarian'];
+  const roles = ['admin', 'manager'];
   return `
     ${pageHeader('Usuarios', 'Crie e exclua acessos da administracao.')}
     <section class="grid cols-2">
@@ -787,15 +636,15 @@ function deleteProductButton(product, total) {
 }
 
 function roleLabel(role) {
-  return { admin: 'Administrador', manager: 'Gerente', veterinarian: 'Veterinario' }[role] || role;
+  return { admin: 'Administrador', manager: 'Gerente' }[role] || role;
 }
 
 function deleteUserButton(user) {
   const allowed =
     user.active &&
     user.id !== state.user.id &&
-    ((state.user.role === 'admin' && ['admin', 'manager'].includes(user.role)) ||
-      (state.user.role === 'manager' && user.role === 'veterinarian'));
+    state.user.role === 'admin' &&
+    ['admin', 'manager'].includes(user.role);
   if (!allowed) return '-';
   return `<button class="btn danger" data-action="delete-user" data-id="${user.id}" data-name="${escapeHtml(user.name)}">Excluir</button>`;
 }
@@ -837,26 +686,6 @@ function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
-async function previewXml(xml) {
-  const preview = await api('/api/xml/preview', { method: 'POST', body: JSON.stringify({ xml }) });
-  state.xmlText = xml;
-  state.xmlItems = preview.items;
-  renderApp();
-  notify(`${preview.items.length} item(ns) lido(s).`);
-}
-
-async function readXmlFile(file) {
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.xml') && !file.type.includes('xml')) {
-    notify('Selecione um arquivo XML.');
-    return;
-  }
-  const xml = await file.text();
-  const textarea = document.querySelector('form[data-action="xml-preview"] textarea[name="xml"]');
-  if (textarea) textarea.value = xml;
-  await previewXml(xml);
-}
-
 async function handleSubmit(event) {
   const form = event.target.closest('form');
   if (!form) return;
@@ -876,26 +705,6 @@ async function handleSubmit(event) {
         body: JSON.stringify({ location: data.location, reference: data.reference, items: collectItems(form) })
       });
       notify('Entrada registrada.');
-    }
-    if (action === 'xml-preview') {
-      await previewXml(data.xml);
-      return;
-    }
-    if (action === 'xml-entry') {
-      await api('/api/stock/entry', {
-        method: 'POST',
-        body: JSON.stringify({
-          location: data.location,
-          reference: data.reference,
-          unit: data.unit,
-          mlPerUnit: data.mlPerUnit,
-          source: 'xml',
-          items: state.xmlItems
-        })
-      });
-      state.xmlItems = [];
-      state.xmlText = '';
-      notify('Entrada por XML registrada.');
     }
     if (action === 'stock-exit') {
       await api('/api/stock/exit', { method: 'POST', body: JSON.stringify(data) });
@@ -920,22 +729,6 @@ async function handleSubmit(event) {
     if (action === 'create-user') {
       await api('/api/users', { method: 'POST', body: JSON.stringify(data) });
       notify('Usuario cadastrado.');
-    }
-    if (action === 'create-vet') {
-      await api('/api/users', { method: 'POST', body: JSON.stringify({ ...data, role: 'veterinarian' }) });
-      notify('Veterinario cadastrado.');
-    }
-    if (action === 'vet-record') {
-      await api('/api/vet-records', {
-        method: 'POST',
-        body: JSON.stringify({
-          commandNumber: data.commandNumber,
-          location: data.location,
-          notes: data.notes,
-          items: collectItems(form)
-        })
-      });
-      notify('Registro enviado.');
     }
     await refresh(true);
   } catch (error) {
@@ -971,10 +764,6 @@ async function handleClick(event) {
       notify('Dados atualizados.');
       return;
     }
-    if (action === 'pick-xml') {
-      target.closest('form')?.querySelector('input[name="xmlFile"]')?.click();
-      return;
-    }
     if (action === 'add-item') {
       const form = target.closest('form');
       form.querySelector('[data-items]').insertAdjacentHTML('beforeend', itemRow());
@@ -999,13 +788,9 @@ async function handleClick(event) {
       notify('Cadastro excluido.');
       return;
     }
-    if (action === 'approve-record' || action === 'reject-record') {
-      const reviewNotes =
-        action === 'reject-record' ? prompt('Motivo da rejeicao') || 'Rejeitado na conferencia' : 'Conferido e aprovado';
-      const path = `/api/vet-records/${target.dataset.id}/${action === 'approve-record' ? 'approve' : 'reject'}`;
-      await api(path, { method: 'POST', body: JSON.stringify({ reviewNotes }) });
-      await refresh(true);
-      notify(action === 'approve-record' ? 'Registro aprovado.' : 'Registro rejeitado.');
+    if (action === 'print-report') {
+      window.print();
+      return;
     }
   } catch (error) {
     notify(error.message);
@@ -1013,36 +798,8 @@ async function handleClick(event) {
 }
 
 async function handleChange(event) {
-  if (event.target.matches('input[name="xmlFile"]')) {
-    try {
-      await readXmlFile(event.target.files[0]);
-      event.target.value = '';
-    } catch (error) {
-      notify(error.message);
-    }
-  }
   if (event.target.matches('[data-action="audit-location-change"]')) {
     updateAuditCurrentBalances(event.target);
-  }
-}
-
-function handleDrag(event) {
-  const zone = event.target.closest('[data-dropzone]');
-  if (!zone) return;
-  event.preventDefault();
-  if (event.type === 'dragenter' || event.type === 'dragover') zone.classList.add('dragging');
-  if (event.type === 'dragleave' || event.type === 'drop') zone.classList.remove('dragging');
-}
-
-async function handleDrop(event) {
-  const zone = event.target.closest('[data-dropzone]');
-  if (!zone) return;
-  event.preventDefault();
-  zone.classList.remove('dragging');
-  try {
-    await readXmlFile(event.dataTransfer.files[0]);
-  } catch (error) {
-    notify(error.message);
   }
 }
 
@@ -1073,10 +830,6 @@ async function hydrateLogs() {
 document.addEventListener('submit', handleSubmit);
 document.addEventListener('click', handleClick);
 document.addEventListener('change', handleChange);
-document.addEventListener('dragenter', handleDrag);
-document.addEventListener('dragover', handleDrag);
-document.addEventListener('dragleave', handleDrag);
-document.addEventListener('drop', handleDrop);
 
 api('/api/me')
   .then(() => refresh(false))
