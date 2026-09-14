@@ -56,6 +56,11 @@ function fmtDate(value) {
   }).format(new Date(value));
 }
 
+function fmtDateOnly(value) {
+  if (!value) return '-';
+  return new Intl.DateTimeFormat('pt-BR').format(new Date(value));
+}
+
 function monthKey(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -321,7 +326,8 @@ function renderEntry() {
         <div class="grid cols-2">
           <input name="location" type="hidden" value="internal" />
           <label class="field">Estoque<input value="Estoque" disabled /></label>
-          <label class="field">Referencia<input name="reference" placeholder="NF, pedido ou observacao" /></label>
+          <label class="field">Numero da nota<input name="reference" placeholder="NF, pedido ou observacao" /></label>
+          <label class="field">Motivo<input name="reason" placeholder="Compra, reposicao, devolucao..." /></label>
         </div>
         <datalist id="product-suggestions">${productSuggestionOptions()}</datalist>
         <div data-items>
@@ -344,6 +350,7 @@ function renderExit() {
       <form data-action="stock-exit">
         <div class="grid cols-2">
           <input name="location" type="hidden" value="internal" />
+          <label class="field">Numero da nota<input name="reference" placeholder="NF, ordem ou documento" /></label>
           <label class="field">Estoque<input value="Estoque" disabled /></label>
           <label class="field">Motivo<input name="reason" required placeholder="Perda, vencimento, ajuste..." /></label>
         </div>
@@ -535,15 +542,117 @@ function movementsByType(type) {
   });
 }
 
+function groupMovements(movements) {
+  const groups = new Map();
+  movements.forEach((movement) => {
+    const key =
+      movement.batch_id ||
+      [
+        movement.type,
+        movement.created_at,
+        movement.reference || '',
+        movement.reason || '',
+        movement.actor_name || ''
+      ].join('|');
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: `movement-${groups.size + 1}`,
+        type: movement.type,
+        created_at: movement.created_at,
+        reference: movement.reference || '',
+        reason: movement.reason || '',
+        actor_name: movement.actor_name || '',
+        location: movement.location,
+        rows: []
+      });
+    }
+    groups.get(key).rows.push(movement);
+  });
+  return [...groups.values()];
+}
+
+function renderMovementGroups(movements) {
+  if (!movements.length) return '<div class="empty">Nenhum movimento registrado.</div>';
+  return `
+    <div class="movement-list">
+      ${groupMovements(movements).map((group) => renderMovementGroup(group)).join('')}
+    </div>
+  `;
+}
+
+function renderMovementGroup(group) {
+  const note = group.reference || 'Sem nota';
+  const totalItems = group.rows.length;
+  return `
+    <details class="movement-group" data-movement-group="${escapeHtml(group.id)}">
+      <summary class="movement-summary">
+        <span class="movement-main">
+          <span class="tag">${movementTypeLabel(group.type)}</span>
+          <strong>Nota: ${escapeHtml(note)}</strong>
+          <span>${fmtDateOnly(group.created_at)}</span>
+        </span>
+        <span class="movement-meta">
+          <span>${escapeHtml(group.reason || '-')}</span>
+          <span>${totalItems} item(ns)</span>
+        </span>
+      </summary>
+      <div class="movement-detail">
+        <div class="movement-print-head print-only">
+          <h1>Relatorio de ${movementTypeLabel(group.type)}</h1>
+          <p>Nota: ${escapeHtml(note)} - Data: ${fmtDate(group.created_at)} - Motivo: ${escapeHtml(group.reason || '-')}</p>
+        </div>
+        <div class="movement-detail-head">
+          <div>
+            <h3>Relatorio de ${movementTypeLabel(group.type)}</h3>
+            <p class="muted">Lancado por ${escapeHtml(group.actor_name || '-')} em ${fmtDate(group.created_at)}</p>
+          </div>
+          <button class="btn secondary screen-only" type="button" data-action="print-movement">Imprimir</button>
+        </div>
+        <dl class="movement-info">
+          <div><dt>Numero da nota</dt><dd>${escapeHtml(note)}</dd></div>
+          <div><dt>Data</dt><dd>${fmtDate(group.created_at)}</dd></div>
+          <div><dt>Motivo</dt><dd>${escapeHtml(group.reason || '-')}</dd></div>
+          <div><dt>Estoque</dt><dd>${locationLabel(group.location)}</dd></div>
+        </dl>
+        ${renderMovementItems(group.rows)}
+      </div>
+    </details>
+  `;
+}
+
+function renderMovementItems(items) {
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Produto</th><th>Codigo</th><th>Qtd.</th><th>Usuario</th></tr></thead>
+        <tbody>
+          ${items
+            .map(
+              (item) => `
+              <tr>
+                <td>${escapeHtml(item.product_name)}</td>
+                <td>${escapeHtml(item.sku || '-')}</td>
+                <td>${formatNumber(item.quantity)} ${escapeHtml(item.quantity_unit || '')}</td>
+                <td>${escapeHtml(item.actor_name || '-')}</td>
+              </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderMovementReport(type, title) {
   const movements = movementsByType(type);
+  const groups = groupMovements(movements);
   const selectedMonth = state.reportMonths[type] || '';
   return `
     <section class="card print-section" data-report-type="${type}" style="margin-top:16px">
       <div class="report-heading">
         <div>
           <h2>${title}</h2>
-          <div class="muted">${movements.length} movimento(s) registrado(s) - ${monthLabel(selectedMonth)}</div>
+          <div class="muted">${groups.length} lancamento(s), ${movements.length} item(ns) - ${monthLabel(selectedMonth)}</div>
         </div>
         <div class="report-actions screen-only">
           <label class="field compact">Mes
@@ -557,7 +666,7 @@ function renderMovementReport(type, title) {
         <h1>${title}</h1>
         <p>${monthLabel(selectedMonth)} - gerado em ${fmtDate(new Date().toISOString())}</p>
       </div>
-      ${renderMovements(movements)}
+      ${renderMovementGroups(movements)}
     </section>
   `;
 }
@@ -750,14 +859,14 @@ async function handleSubmit(event) {
     if (action === 'manual-entry') {
       await api('/api/stock/entry', {
         method: 'POST',
-        body: JSON.stringify({ location: data.location, reference: data.reference, items: collectItems(form) })
+        body: JSON.stringify({ location: data.location, reference: data.reference, reason: data.reason, items: collectItems(form) })
       });
       notify('Entrada registrada.');
     }
     if (action === 'stock-exit') {
       await api('/api/stock/exit', {
         method: 'POST',
-        body: JSON.stringify({ location: data.location, reason: data.reason, items: collectItems(form) })
+        body: JSON.stringify({ location: data.location, reference: data.reference, reason: data.reason, items: collectItems(form) })
       });
       notify('Saida registrada.');
     }
@@ -845,6 +954,13 @@ async function handleClick(event) {
       window.print();
       return;
     }
+    if (action === 'print-movement') {
+      const group = target.closest('[data-movement-group]');
+      if (group) group.classList.add('print-target');
+      document.body.dataset.printMovement = 'true';
+      window.print();
+      return;
+    }
     if (action === 'clear-report-month') {
       state.reportMonths[target.dataset.reportType] = '';
       renderApp();
@@ -904,6 +1020,8 @@ document.addEventListener('change', handleChange);
 document.addEventListener('input', handleInput);
 window.addEventListener('afterprint', () => {
   delete document.body.dataset.printReport;
+  delete document.body.dataset.printMovement;
+  document.querySelectorAll('.movement-group.print-target').forEach((item) => item.classList.remove('print-target'));
 });
 
 api('/api/me')

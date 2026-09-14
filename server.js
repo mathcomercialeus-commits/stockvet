@@ -243,6 +243,7 @@ function initDb() {
 function migrateSchema() {
   [
     'ALTER TABLE products ADD COLUMN ml_per_unit REAL',
+    'ALTER TABLE movements ADD COLUMN batch_id TEXT',
     "ALTER TABLE movements ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
     'ALTER TABLE movements ADD COLUMN quantity_base REAL',
     "ALTER TABLE vet_record_items ADD COLUMN quantity_unit TEXT NOT NULL DEFAULT 'un'",
@@ -723,6 +724,9 @@ function handleApi(req, res, pathname) {
         const items = Array.isArray(body.items) ? body.items : [];
         if (!items.length) throw httpError(400, 'Informe ao menos um item.');
         const tx = db.createTagStore();
+        const batchId = randomBytes(12).toString('hex');
+        const reason = String(body.reason || 'Entrada de estoque').trim() || 'Entrada de estoque';
+        const reference = String(body.reference || '').trim() || null;
         db.exec('BEGIN');
         try {
           items.forEach((item) => {
@@ -733,8 +737,8 @@ function handleApi(req, res, pathname) {
             const quantityBase = toStockQuantity(product, quantity, quantityUnit);
             changeStock(productId, location, quantityBase);
             tx.run`
-              INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
-              VALUES (${productId}, ${location}, 'entry', ${quantity}, ${quantityUnit}, ${quantityBase}, ${body.reason || 'Entrada de estoque'}, 'manual', ${body.reference || null}, ${user.id}, ${now()})
+              INSERT INTO movements (batch_id, product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+              VALUES (${batchId}, ${productId}, ${location}, 'entry', ${quantity}, ${quantityUnit}, ${quantityBase}, ${reason}, 'manual', ${reference}, ${user.id}, ${now()})
             `;
           });
           db.exec('COMMIT');
@@ -742,7 +746,7 @@ function handleApi(req, res, pathname) {
           db.exec('ROLLBACK');
           throw error;
         }
-        audit(user, 'stock.entry', 'movement', null, { location, source: 'manual', count: items.length });
+        audit(user, 'stock.entry', 'movement', batchId, { location, source: 'manual', reference, reason, count: items.length });
         return sendJson(res, 201, { ok: true });
       }
 
@@ -755,6 +759,7 @@ function handleApi(req, res, pathname) {
         const body = await readBody(req);
         const location = body.location || 'internal';
         const reason = String(body.reason || '').trim();
+        const reference = String(body.reference || '').trim() || null;
         const items =
           Array.isArray(body.items) && body.items.length
             ? body.items
@@ -765,6 +770,7 @@ function handleApi(req, res, pathname) {
 
         const movementIds = [];
         const movementItems = [];
+        const batchId = randomBytes(12).toString('hex');
         db.exec('BEGIN');
         try {
           items.forEach((item) => {
@@ -778,9 +784,9 @@ function handleApi(req, res, pathname) {
             }
             changeStock(productId, location, -quantityBase);
             const id = run(
-              `INSERT INTO movements (product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, created_by, created_at)
-               VALUES (@productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'manual', @createdBy, @createdAt)`,
-              { productId, location, quantity, quantityUnit, quantityBase, reason, createdBy: user.id, createdAt: now() }
+              `INSERT INTO movements (batch_id, product_id, location, type, quantity, quantity_unit, quantity_base, reason, source, reference, created_by, created_at)
+               VALUES (@batchId, @productId, @location, 'exit', @quantity, @quantityUnit, @quantityBase, @reason, 'manual', @reference, @createdBy, @createdAt)`,
+              { batchId, productId, location, quantity, quantityUnit, quantityBase, reason, reference, createdBy: user.id, createdAt: now() }
             ).lastInsertRowid;
             movementIds.push(id);
             movementItems.push({ productId, quantity, quantityUnit, quantityBase });
@@ -792,8 +798,10 @@ function handleApi(req, res, pathname) {
         }
 
         audit(user, 'stock.exit', 'movement', movementIds.join(','), {
+          batchId,
           location,
           reason,
+          reference,
           count: movementItems.length,
           items: movementItems
         });
