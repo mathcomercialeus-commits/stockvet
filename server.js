@@ -162,6 +162,11 @@ function initDb() {
       FOREIGN KEY (product_id) REFERENCES products(id),
       FOREIGN KEY (created_by) REFERENCES users(id)
     );
+    CREATE TABLE IF NOT EXISTS request_locks (
+      request_id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS vet_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       command_number TEXT NOT NULL,
@@ -583,6 +588,79 @@ function auditExpectedQuantity(productId, location) {
   );
 }
 
+function normalizeRequestId(value) {
+  const requestId = String(value || '').trim();
+  if (!requestId || requestId.length > 120) return null;
+  return requestId;
+}
+
+function markRequestStarted(action, requestId) {
+  if (!requestId) return false;
+  try {
+    run('INSERT INTO request_locks (request_id, action, created_at) VALUES (@requestId, @action, @createdAt)', {
+      requestId,
+      action,
+      createdAt: now()
+    });
+    return false;
+  } catch (error) {
+    if (String(error.message).includes('UNIQUE constraint failed')) return true;
+    throw error;
+  }
+}
+
+function validatedMovementIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+}
+
+function movementRowsForDeletion(body) {
+  const type = String(body.type || '').trim();
+  if (!['entry', 'exit'].includes(type)) throw httpError(400, 'Tipo de nota invalido.');
+
+  const batchId = String(body.batchId || '').trim();
+  if (batchId) {
+    return all(
+      `SELECT m.*, p.name AS product_name, p.sku
+       FROM movements m
+       JOIN products p ON p.id = m.product_id
+       WHERE m.batch_id = @batchId AND m.type = @type AND m.source = 'manual'
+       ORDER BY m.id`,
+      { batchId, type }
+    );
+  }
+
+  const ids = validatedMovementIds(body.movementIds);
+  if (!ids.length) throw httpError(400, 'Informe a nota que sera excluida.');
+  const params = { type };
+  const placeholders = ids
+    .map((id, index) => {
+      params[`id${index}`] = id;
+      return `@id${index}`;
+    })
+    .join(', ');
+  const rows = all(
+    `SELECT m.*, p.name AS product_name, p.sku
+     FROM movements m
+     JOIN products p ON p.id = m.product_id
+     WHERE m.id IN (${placeholders}) AND m.type = @type AND m.source = 'manual'
+     ORDER BY m.id`,
+    params
+  );
+  if (rows.length !== ids.length) throw httpError(404, 'Nota manual nao encontrada.');
+  return rows;
+}
+
+function deleteMovementRows(rows) {
+  if (!rows.length) throw httpError(404, 'Nota manual nao encontrada.');
+  rows.forEach((row) => {
+    const quantityBase = Number(row.quantity_base || row.quantity || 0);
+    const delta = row.type === 'entry' ? -quantityBase : quantityBase;
+    changeStock(row.product_id, row.location, delta);
+    run('DELETE FROM movements WHERE id = @id', { id: row.id });
+  });
+}
+
 function handleApi(req, res, pathname) {
   return Promise.resolve()
     .then(async () => {
@@ -727,8 +805,13 @@ function handleApi(req, res, pathname) {
         const batchId = randomBytes(12).toString('hex');
         const reason = String(body.reason || 'Entrada de estoque').trim() || 'Entrada de estoque';
         const reference = String(body.reference || '').trim() || null;
+        const requestId = normalizeRequestId(body.requestId);
         db.exec('BEGIN');
         try {
+          if (markRequestStarted('stock.entry', requestId)) {
+            db.exec('ROLLBACK');
+            return sendJson(res, 200, { ok: true, duplicate: true });
+          }
           items.forEach((item) => {
             const productId = ensureManualProduct(item, user);
             const product = getProduct(productId);
@@ -771,8 +854,13 @@ function handleApi(req, res, pathname) {
         const movementIds = [];
         const movementItems = [];
         const batchId = randomBytes(12).toString('hex');
+        const requestId = normalizeRequestId(body.requestId);
         db.exec('BEGIN');
         try {
+          if (markRequestStarted('stock.exit', requestId)) {
+            db.exec('ROLLBACK');
+            return sendJson(res, 200, { ok: true, duplicate: true, ids: [] });
+          }
           items.forEach((item) => {
             const productId = Number(item.productId);
             const quantity = Number(item.quantity);
@@ -806,6 +894,39 @@ function handleApi(req, res, pathname) {
           items: movementItems
         });
         return sendJson(res, 201, { ok: true, ids: movementIds });
+      }
+
+      if (req.method === 'DELETE' && pathname === '/api/stock/movement-groups') {
+        requireRole(user, ['admin']);
+        const body = await readBody(req);
+        const rows = movementRowsForDeletion(body);
+        const summary = {
+          type: rows[0].type,
+          batchId: rows[0].batch_id || null,
+          reference: rows[0].reference || null,
+          reason: rows[0].reason || null,
+          count: rows.length,
+          movementIds: rows.map((row) => row.id),
+          items: rows.map((row) => ({
+            productId: row.product_id,
+            productName: row.product_name,
+            sku: row.sku,
+            location: row.location,
+            quantity: row.quantity,
+            quantityUnit: row.quantity_unit,
+            quantityBase: row.quantity_base
+          }))
+        };
+        db.exec('BEGIN');
+        try {
+          deleteMovementRows(rows);
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        audit(user, 'stock.movement_group.deleted', 'movement_group', summary.batchId || summary.movementIds.join(','), summary);
+        return sendJson(res, 200, { ok: true });
       }
 
       if (req.method === 'POST' && pathname === '/api/xml/preview') {

@@ -163,6 +163,13 @@ textarea:focus {
   background: var(--brand-strong);
 }
 
+.btn:disabled,
+.btn:disabled:hover {
+  cursor: wait;
+  opacity: 0.65;
+  background: var(--brand);
+}
+
 .btn.secondary {
   border: 1px solid var(--line);
   background: #fff;

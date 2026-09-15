@@ -10,6 +10,8 @@ const state = {
   }
 };
 
+const submittingForms = new WeakSet();
+
 const roleTabs = {
   admin: [
     ['dashboard', 'Dashboard'],
@@ -557,15 +559,18 @@ function groupMovements(movements) {
     if (!groups.has(key)) {
       groups.set(key, {
         id: `movement-${groups.size + 1}`,
+        batch_id: movement.batch_id || '',
         type: movement.type,
         created_at: movement.created_at,
         reference: movement.reference || '',
         reason: movement.reason || '',
         actor_name: movement.actor_name || '',
         location: movement.location,
+        movement_ids: [],
         rows: []
       });
     }
+    groups.get(key).movement_ids.push(movement.id);
     groups.get(key).rows.push(movement);
   });
   return [...groups.values()];
@@ -583,6 +588,8 @@ function renderMovementGroups(movements) {
 function renderMovementGroup(group) {
   const note = group.reference || 'Sem nota';
   const totalItems = group.rows.length;
+  const canDelete =
+    state.user?.role === 'admin' && ['entry', 'exit'].includes(group.type) && group.rows.every((row) => row.source === 'manual');
   return `
     <details class="movement-group" data-movement-group="${escapeHtml(group.id)}">
       <summary class="movement-summary">
@@ -606,7 +613,14 @@ function renderMovementGroup(group) {
             <h3>Relatorio de ${movementTypeLabel(group.type)}</h3>
             <p class="muted">Lancado por ${escapeHtml(group.actor_name || '-')} em ${fmtDate(group.created_at)}</p>
           </div>
-          <button class="btn secondary screen-only" type="button" data-action="print-movement">Imprimir</button>
+          <div class="actions screen-only">
+            <button class="btn secondary" type="button" data-action="print-movement">Imprimir</button>
+            ${
+              canDelete
+                ? `<button class="btn danger" type="button" data-action="delete-movement-group" data-type="${escapeHtml(group.type)}" data-batch-id="${escapeHtml(group.batch_id)}" data-movement-ids="${escapeHtml(group.movement_ids.join(','))}" data-note="${escapeHtml(note)}">Excluir nota</button>`
+                : ''
+            }
+          </div>
         </div>
         <dl class="movement-info">
           <div><dt>Numero da nota</dt><dd>${escapeHtml(note)}</dd></div>
@@ -843,10 +857,32 @@ function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
+function requestId(prefix) {
+  const randomPart = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  return `${prefix}-${randomPart}`;
+}
+
+function setFormSubmitting(form, submitting) {
+  form.querySelectorAll('button[type="submit"]').forEach((button) => {
+    if (submitting) {
+      button.dataset.originalText = button.textContent;
+      button.textContent = 'Salvando...';
+      button.disabled = true;
+    } else {
+      button.textContent = button.dataset.originalText || button.textContent;
+      button.disabled = false;
+      delete button.dataset.originalText;
+    }
+  });
+}
+
 async function handleSubmit(event) {
   const form = event.target.closest('form');
   if (!form) return;
   event.preventDefault();
+  if (submittingForms.has(form)) return;
+  submittingForms.add(form);
+  setFormSubmitting(form, true);
   const action = form.dataset.action;
   const data = formData(form);
   try {
@@ -859,14 +895,26 @@ async function handleSubmit(event) {
     if (action === 'manual-entry') {
       await api('/api/stock/entry', {
         method: 'POST',
-        body: JSON.stringify({ location: data.location, reference: data.reference, reason: data.reason, items: collectItems(form) })
+        body: JSON.stringify({
+          requestId: requestId('stock-entry'),
+          location: data.location,
+          reference: data.reference,
+          reason: data.reason,
+          items: collectItems(form)
+        })
       });
       notify('Entrada registrada.');
     }
     if (action === 'stock-exit') {
       await api('/api/stock/exit', {
         method: 'POST',
-        body: JSON.stringify({ location: data.location, reference: data.reference, reason: data.reason, items: collectItems(form) })
+        body: JSON.stringify({
+          requestId: requestId('stock-exit'),
+          location: data.location,
+          reference: data.reference,
+          reason: data.reason,
+          items: collectItems(form)
+        })
       });
       notify('Saida registrada.');
     }
@@ -889,6 +937,9 @@ async function handleSubmit(event) {
     await refresh(true);
   } catch (error) {
     notify(error.message);
+  } finally {
+    submittingForms.delete(form);
+    if (document.body.contains(form)) setFormSubmitting(form, false);
   }
 }
 
@@ -947,6 +998,25 @@ async function handleClick(event) {
       await api(`/api/products/${target.dataset.id}`, { method: 'DELETE' });
       await refresh(true);
       notify('Cadastro excluido.');
+      return;
+    }
+    if (action === 'delete-movement-group') {
+      const typeLabel = movementTypeLabel(target.dataset.type).toLowerCase();
+      const note = target.dataset.note || 'Sem nota';
+      const message =
+        `Excluir a nota de ${typeLabel} ${note}?` +
+        '\n\nO saldo do estoque sera revertido e o registro sera removido do relatorio.';
+      if (!confirm(message)) return;
+      await api('/api/stock/movement-groups', {
+        method: 'DELETE',
+        body: JSON.stringify({
+          type: target.dataset.type,
+          batchId: target.dataset.batchId || null,
+          movementIds: (target.dataset.movementIds || '').split(',').map(Number).filter(Boolean)
+        })
+      });
+      await refresh(true);
+      notify('Nota excluida.');
       return;
     }
     if (action === 'print-report') {
